@@ -37,6 +37,6 @@ describe('WagerTransaction', () => {
       status: WagerTransactionStatus.PROCESSED,
     });
 
-    expect(() => transaction.markRejected('INSUFFICIENT_FUNDS')).toThrow('Invalid transaction state');
+    expect(() => transaction.markRejected('INSUFFICIENT_FUNDS')).toThrow('Cannot transition');
   });
 });

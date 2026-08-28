@@ -2,6 +2,7 @@ import { Entity, Enum, ManyToOne, PrimaryKey, Property, type Rel } from '@mikro-
 import { WalletEntity } from './wallet.entity';
 
 export enum WagerTransactionKindEntity {
+  OPENING = 'OPENING',
   BET = 'BET',
   WIN = 'WIN',
   LOSS = 'LOSS',

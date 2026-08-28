@@ -1,9 +1,11 @@
 import { MikroORM } from '@mikro-orm/core';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { Money } from '../../domain/money';
 import { Wallet } from '../../domain/wallet';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
+import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionStatusEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
+import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
 
 export interface CreateWalletInput {
   playerId: string;
@@ -44,7 +46,7 @@ export class CreateWalletUseCase {
     });
 
     await this.orm.em.transactional(async (em) => {
-      const entity = em.create(WalletEntity, {
+      const walletEntity = em.create(WalletEntity, {
         id: wallet.id,
         playerId: wallet.playerId,
         currency: wallet.currency,
@@ -54,7 +56,55 @@ export class CreateWalletUseCase {
         updatedAt: wallet.updatedAt,
       });
 
-      em.persist(entity);
+      em.persist(walletEntity);
+
+      if (initialBalance.isPositive()) {
+        const openingIdempotencyKey = `wallet-open:${wallet.id}`;
+        const openingPayload = {
+          walletId: wallet.id,
+          playerId: wallet.playerId,
+          kind: WagerTransactionKindEntity.OPENING,
+          amount: initialBalance.toJSON(),
+          currency: wallet.currency,
+          referenceExternalTransactionId: null,
+        };
+
+        const openingHash = createHash('sha256')
+          .update(JSON.stringify(openingPayload, Object.keys(openingPayload).sort()))
+          .digest('hex');
+
+        const openingTransaction = em.create(WagerTransactionEntity, {
+          id: randomUUID(),
+          wallet: walletEntity,
+          playerId: wallet.playerId,
+          providerId: 'system',
+          externalTransactionId: `wallet-open:${wallet.id}`,
+          idempotencyKey: openingIdempotencyKey,
+          kind: WagerTransactionKindEntity.OPENING,
+          amount: initialBalance.toString(),
+          currency: wallet.currency,
+          referenceExternalTransactionId: null,
+          status: WagerTransactionStatusEntity.PROCESSED,
+          payloadHash: openingHash,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        em.persist(openingTransaction);
+
+        const ledgerEntry = em.create(WalletLedgerEntryEntity, {
+          id: randomUUID(),
+          wallet: walletEntity,
+          transaction: openingTransaction,
+          entryType: WalletLedgerEntryType.CREDIT,
+          amount: initialBalance.toString(),
+          balanceBefore: '0.00',
+          balanceAfter: initialBalance.toString(),
+          createdAt: new Date(),
+        });
+
+        em.persist(ledgerEntry);
+      }
     });
 
     return {
