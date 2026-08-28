@@ -1,7 +1,7 @@
 import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
 
 @Entity({ tableName: 'wallets' })
-export class Wallet {
+export class WalletEntity {
   @PrimaryKey({ type: 'uuid' })
   id!: string;
 
@@ -23,3 +23,5 @@ export class Wallet {
   @Property({ columnType: 'timestamptz', defaultRaw: 'CURRENT_TIMESTAMP' })
   updatedAt!: Date;
 }
+
+export { WalletEntity as Wallet };
