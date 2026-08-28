@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'bun:test';
 import { Money } from './money';
 
 describe('Money', () => {
