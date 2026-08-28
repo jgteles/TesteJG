@@ -1,4 +1,5 @@
 import { Money } from './money';
+import { CurrencyMismatchError, LedgerBalanceMismatchError } from './errors';
 
 export type LedgerEntryType = 'OPENING' | 'CREDIT' | 'DEBIT';
 
@@ -13,32 +14,43 @@ export interface WalletLedgerEntryProps {
   createdAt?: Date;
 }
 
+export interface WalletLedgerEntryState {
+  id: string;
+  walletId: string;
+  transactionId: string;
+  type: LedgerEntryType;
+  amount: Money;
+  balanceBefore: Money;
+  balanceAfter: Money;
+  createdAt: Date;
+}
+
 export class WalletLedgerEntry {
-  public readonly id: string;
-  public readonly walletId: string;
-  public readonly transactionId: string;
-  public readonly type: LedgerEntryType;
-  public readonly amount: Money;
-  public readonly balanceBefore: Money;
-  public readonly balanceAfter: Money;
-  public readonly createdAt: Date;
+  private readonly _id: string;
+  private readonly _walletId: string;
+  private readonly _transactionId: string;
+  private readonly _type: LedgerEntryType;
+  private readonly _amount: Money;
+  private readonly _balanceBefore: Money;
+  private readonly _balanceAfter: Money;
+  private readonly _createdAt: Date;
 
   private constructor(props: WalletLedgerEntryProps) {
-    this.id = props.id;
-    this.walletId = props.walletId;
-    this.transactionId = props.transactionId;
-    this.type = props.type;
-    this.amount = props.amount;
-    this.balanceBefore = props.balanceBefore;
-    this.balanceAfter = props.balanceAfter;
-    this.createdAt = props.createdAt ?? new Date();
+    this._id = props.id;
+    this._walletId = props.walletId;
+    this._transactionId = props.transactionId;
+    this._type = props.type;
+    this._amount = props.amount;
+    this._balanceBefore = props.balanceBefore;
+    this._balanceAfter = props.balanceAfter;
+    this._createdAt = props.createdAt ?? new Date();
   }
 
   static create(props: WalletLedgerEntryProps): WalletLedgerEntry {
     const amountCurrency = props.amount.currency;
 
     if (props.balanceBefore.currency !== amountCurrency || props.balanceAfter.currency !== amountCurrency) {
-      throw new Error('Currency mismatch in ledger entry');
+      throw new CurrencyMismatchError(props.balanceBefore.currency, amountCurrency);
     }
 
     const expectedBalanceAfter = (() => {
@@ -54,9 +66,31 @@ export class WalletLedgerEntry {
     })();
 
     if (!props.balanceAfter.equals(expectedBalanceAfter)) {
-      throw new Error('Ledger balance verification failed');
+      throw new LedgerBalanceMismatchError();
     }
 
     return new WalletLedgerEntry(props);
   }
+
+  static rehydrate(state: WalletLedgerEntryState): WalletLedgerEntry {
+    return new WalletLedgerEntry({
+      id: state.id,
+      walletId: state.walletId,
+      transactionId: state.transactionId,
+      type: state.type,
+      amount: state.amount,
+      balanceBefore: state.balanceBefore,
+      balanceAfter: state.balanceAfter,
+      createdAt: state.createdAt,
+    });
+  }
+
+  get id(): string { return this._id; }
+  get walletId(): string { return this._walletId; }
+  get transactionId(): string { return this._transactionId; }
+  get type(): LedgerEntryType { return this._type; }
+  get amount(): Money { return this._amount; }
+  get balanceBefore(): Money { return this._balanceBefore; }
+  get balanceAfter(): Money { return this._balanceAfter; }
+  get createdAt(): Date { return this._createdAt; }
 }
