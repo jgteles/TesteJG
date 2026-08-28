@@ -1,24 +1,10 @@
-import { Module, OnModuleInit } from '@nestjs/common';
-import { MikroORM } from '@mikro-orm/core';
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { HealthController } from './health/health.controller';
 import config from './mikro-orm.config';
 
 @Module({
+  imports: [MikroOrmModule.forRoot(config)],
   controllers: [HealthController],
-  providers: [
-    {
-      provide: MikroORM,
-      useFactory: async () => {
-        const orm = await MikroORM.init(config);
-        return orm;
-      },
-    },
-  ],
 })
-export class AppModule implements OnModuleInit {
-  constructor(private readonly orm: MikroORM) {}
-
-  async onModuleInit(): Promise<void> {
-    await this.orm.connect();
-  }
-}
+export class AppModule {}

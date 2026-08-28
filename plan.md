@@ -43,7 +43,7 @@ Opções avaliadas:
 3. **Update atômico condicionado** (`UPDATE wallets SET balance = balance - X WHERE id = ? AND balance >= X`).
 
 **Recomendação:** pessimistic locking (`FOR UPDATE`) na linha da wallet dentro da transação SQL que já cobre inbox + transaction + ledger + outbox. É mais simples de raciocinar sob alta concorrência com múltiplas instâncias do que optimistic + retry, e evita lost update sem lógica de retry adicional. Justificar trade-off (throughput vs simplicidade) no `ARCHITECTURE.md`. Manter `version` mesmo assim, para auditoria/otimismo em leituras.
-
+**Nota operacional importante sobre RequestContext:** `MikroOrmModule.forRoot(config)` já cria o contexto por requisição HTTP automaticamente. Para workers/consumers SQS, o código precisa invocar `RequestContext.create(orm.em, async () => ...)` manualmente para evitar que múltiplas mensagens compartilhem o mesmo `EntityManager` e o Identity Map. Essa regra deverá ser explicitamente implementada no consumer do Dia 2.
 ### Estratégia de idempotência
 
 - Chave primária/única `(consumerName, messageId)` na tabela de inbox — para consumo via SQS.

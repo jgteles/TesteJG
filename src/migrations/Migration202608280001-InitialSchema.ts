@@ -60,7 +60,11 @@ export default class InitialSchema extends Migration {
         CONSTRAINT wallet_ledger_entries_wallet_fk FOREIGN KEY (wallet_id) REFERENCES wallets (id),
         CONSTRAINT wallet_ledger_entries_transaction_fk FOREIGN KEY (transaction_id) REFERENCES wager_transactions (id),
         CONSTRAINT wallet_ledger_entries_unique UNIQUE (transaction_id, wallet_id),
-        CONSTRAINT wallet_ledger_entries_balance_check CHECK (balance_after = balance_before + amount)
+        CONSTRAINT wallet_ledger_entries_balance_check CHECK (
+          (entry_type IN ('OPENING', 'CREDIT') AND balance_after = balance_before + amount)
+          OR
+          (entry_type = 'DEBIT' AND balance_after = balance_before - amount)
+        )
       );
     `);
 
