@@ -5,6 +5,7 @@ import config from '../../mikro-orm.config';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
+import { WagerTransactionEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { CreateWalletUseCase } from './create-wallet.use-case';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case';
 
@@ -149,5 +150,83 @@ describe('SubmitWagerTransactionUseCase', () => {
       entryType: WalletLedgerEntryType.DEBIT,
     });
     expect(debits).toBe(1);
+  });
+
+  it('processes REFUND and ROLLBACK references with inverse ledger entries', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const base = {
+      walletId: wallet.id,
+      playerId,
+      providerId: `provider-reversal-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-reversal',
+      currency: 'BRL',
+    };
+
+    const betExternalId = randomUUID();
+    const bet = await submit.execute({
+      ...base,
+      externalTransactionId: betExternalId,
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.BET,
+      amount: '25.00',
+    });
+    const refund = await submit.execute({
+      ...base,
+      externalTransactionId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.REFUND,
+      amount: '25.00',
+      referenceExternalTransactionId: betExternalId,
+    });
+
+    const winExternalId = randomUUID();
+    const win = await submit.execute({
+      ...base,
+      externalTransactionId: winExternalId,
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.WIN,
+      amount: '10.00',
+    });
+    const rollback = await submit.execute({
+      ...base,
+      externalTransactionId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.ROLLBACK,
+      amount: '10.00',
+      referenceExternalTransactionId: winExternalId,
+    });
+
+    expect(bet.balance.amount).toBe('75.00');
+    expect(refund.status).toBe(WagerTransactionStatus.PROCESSED);
+    expect(refund.balance.amount).toBe('100.00');
+    expect(refund.referenceTransactionId).toBe(bet.id);
+    expect(win.balance.amount).toBe('110.00');
+    expect(rollback.status).toBe(WagerTransactionStatus.PROCESSED);
+    expect(rollback.balance.amount).toBe('100.00');
+    expect(rollback.referenceTransactionId).toBe(win.id);
+
+    const readEm = orm.em.fork();
+    const storedRefund = await readEm.findOneOrFail(WagerTransactionEntity, { id: refund.id });
+    const storedRollback = await readEm.findOneOrFail(WagerTransactionEntity, { id: rollback.id });
+    const refundLedger = await readEm.findOneOrFail(WalletLedgerEntryEntity, {
+      transaction: { id: refund.id },
+    });
+    const rollbackLedger = await readEm.findOneOrFail(WalletLedgerEntryEntity, {
+      transaction: { id: rollback.id },
+    });
+
+    expect(storedRefund.referenceTransactionId).toBe(bet.id);
+    expect(storedRollback.referenceTransactionId).toBe(win.id);
+    expect(refundLedger.entryType).toBe(WalletLedgerEntryType.CREDIT);
+    expect(refundLedger.balanceBefore).toBe('75.00');
+    expect(refundLedger.balanceAfter).toBe('100.00');
+    expect(rollbackLedger.entryType).toBe(WalletLedgerEntryType.DEBIT);
+    expect(rollbackLedger.balanceBefore).toBe('110.00');
+    expect(rollbackLedger.balanceAfter).toBe('100.00');
   });
 });
