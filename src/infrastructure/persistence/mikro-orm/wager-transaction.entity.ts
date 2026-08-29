@@ -29,6 +29,12 @@ export class WagerTransactionEntity {
   @Property({ columnType: 'varchar(255)' })
   externalTransactionId!: string;
 
+  @Property({ columnType: 'varchar(255)', nullable: true })
+  roundId?: string;
+
+  @Property({ columnType: 'varchar(255)', nullable: true })
+  gameId?: string;
+
   @ManyToOne(() => WalletEntity, { fieldName: 'wallet_id' })
   wallet!: Rel<WalletEntity>;
 

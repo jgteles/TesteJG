@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js';
+import { CurrencyMismatchError, InvalidMoneyError } from './errors';
 
 export interface MoneyProps {
   amount: string;
@@ -17,11 +18,11 @@ export class Money {
     const currency = props.currency.trim().toUpperCase();
 
     if (!/^[A-Z]{3}$/.test(currency)) {
-      throw new Error('Currency must be a three-letter ISO-4217 code');
+      throw new InvalidMoneyError('Currency must be a three-letter ISO-4217 code');
     }
 
     if (!Money.amountPattern.test(props.amount)) {
-      throw new Error('Amount must be a non-negative decimal with at most two places');
+      throw new InvalidMoneyError('Amount must be a non-negative decimal with at most two places');
     }
 
     return new Money(new Decimal(props.amount), currency);
@@ -76,7 +77,7 @@ export class Money {
 
   private static fromInternal(value: Decimal, currency: string): Money {
     if (!value.isFinite() || value.decimalPlaces() > 2) {
-      throw new Error('Money operation produced an invalid scale');
+      throw new InvalidMoneyError('Money operation produced an invalid scale');
     }
 
     return new Money(value, currency);
@@ -84,7 +85,7 @@ export class Money {
 
   private assertSameCurrency(other: Money): void {
     if (this.currency !== other.currency) {
-      throw new Error(`Currency mismatch: ${this.currency} and ${other.currency}`);
+      throw new CurrencyMismatchError(this.currency, other.currency);
     }
   }
 }

@@ -17,6 +17,8 @@ export interface SubmitWagerTransactionInput {
   playerId: string;
   providerId: string;
   externalTransactionId: string;
+  roundId: string;
+  gameId: string;
   idempotencyKey?: string;
   kind: WagerTransactionKind;
   amount: string;
@@ -30,6 +32,8 @@ export interface SubmitWagerTransactionOutput {
   playerId: string;
   providerId: string;
   externalTransactionId: string;
+  roundId: string;
+  gameId: string;
   idempotencyKey: string;
   kind: WagerTransactionKind;
   status: WagerTransactionStatus;
@@ -108,6 +112,8 @@ export class SubmitWagerTransactionUseCase {
         playerId: input.playerId,
         providerId: input.providerId,
         externalTransactionId: input.externalTransactionId,
+        roundId: input.roundId,
+        gameId: input.gameId,
         idempotencyKey,
         payloadHash,
         kind: input.kind,
@@ -162,6 +168,8 @@ export class SubmitWagerTransactionUseCase {
         playerId: tx.playerId,
         providerId: tx.providerId,
         externalTransactionId: tx.externalTransactionId,
+        roundId: tx.roundId,
+        gameId: tx.gameId,
         idempotencyKey: tx.idempotencyKey,
         kind: this.toEntityKind(tx.kind),
         amount: tx.amount.toString(),
@@ -212,6 +220,8 @@ export class SubmitWagerTransactionUseCase {
       playerId: input.playerId,
       providerId: input.providerId,
       externalTransactionId: input.externalTransactionId,
+      roundId: input.roundId,
+      gameId: input.gameId,
       kind: input.kind,
       amount: amount.toJSON(),
       currency: amount.currency,
@@ -263,6 +273,8 @@ export class SubmitWagerTransactionUseCase {
       playerId: entity.playerId,
       providerId: entity.providerId,
       externalTransactionId: entity.externalTransactionId,
+      roundId: entity.roundId!,
+      gameId: entity.gameId!,
       idempotencyKey: entity.idempotencyKey,
       kind: this.fromEntityKind(entity.kind),
       status: this.fromEntityStatus(entity.status),

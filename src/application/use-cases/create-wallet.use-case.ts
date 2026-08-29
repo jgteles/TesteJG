@@ -3,6 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { Money } from '../../domain/money';
 import { Wallet } from '../../domain/wallet';
+import { CurrencyMismatchError } from '../../domain/errors';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
 import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionStatusEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
@@ -38,6 +39,10 @@ export class CreateWalletUseCase {
       amount: initialBalanceAmount.amount,
       currency: initialBalanceAmount.currency ?? currency,
     });
+
+    if (initialBalance.currency !== currency) {
+      throw new CurrencyMismatchError(currency, initialBalance.currency);
+    }
 
     const wallet = Wallet.open({
       id: randomUUID(),

@@ -5,6 +5,8 @@ export class DomainError extends Error {
   }
 }
 
+export class InvalidMoneyError extends DomainError {}
+
 export class CurrencyMismatchError extends DomainError {
   constructor(currencyA: string, currencyB: string) {
     super(`Currency mismatch: ${currencyA} and ${currencyB}`);

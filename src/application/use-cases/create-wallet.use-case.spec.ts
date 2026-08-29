@@ -46,5 +46,12 @@ describe('CreateWalletUseCase', () => {
     expect(openingTransaction?.kind).toBe(WagerTransactionKindEntity.OPENING);
     expect(ledgerEntry?.entryType).toBe(WalletLedgerEntryType.CREDIT);
     expect(ledgerEntry?.balanceAfter).toBe('25.00');
+
+    await expect(
+      orm.em.getConnection().execute(
+        'UPDATE wallet_ledger_entries SET amount = ? WHERE id = ?',
+        ['30.00', ledgerEntry!.id],
+      ),
+    ).rejects.toThrow('wallet ledger entries are immutable');
   });
 });

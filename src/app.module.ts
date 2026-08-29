@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { WalletsController } from './application/controllers/wallets.controller';
 import { WagerTransactionsController } from './application/controllers/wager-transactions.controller';
@@ -6,10 +7,17 @@ import { CreateWalletUseCase } from './application/use-cases/create-wallet.use-c
 import { SubmitWagerTransactionUseCase } from './application/use-cases/submit-wager-transaction.use-case';
 import { HealthController } from './health/health.controller';
 import config from './mikro-orm.config';
+import { ApplicationExceptionFilter } from './application/filters/application-exception.filter';
+import { MigrationRunnerService } from './infrastructure/persistence/migration-runner.service';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
   controllers: [HealthController, WalletsController, WagerTransactionsController],
-  providers: [CreateWalletUseCase, SubmitWagerTransactionUseCase],
+  providers: [
+    CreateWalletUseCase,
+    SubmitWagerTransactionUseCase,
+    MigrationRunnerService,
+    { provide: APP_FILTER, useClass: ApplicationExceptionFilter },
+  ],
 })
 export class AppModule {}

@@ -19,6 +19,8 @@ export interface WagerTransactionProps {
   playerId: string;
   providerId: string;
   externalTransactionId: string;
+  roundId: string;
+  gameId: string;
   idempotencyKey: string;
   payloadHash: string;
   kind: WagerTransactionKind;
@@ -37,6 +39,8 @@ export interface WagerTransactionState {
   playerId: string;
   providerId: string;
   externalTransactionId: string;
+  roundId: string;
+  gameId: string;
   idempotencyKey: string;
   payloadHash: string;
   kind: WagerTransactionKind;
@@ -55,6 +59,8 @@ export class WagerTransaction {
   private readonly _playerId: string;
   private readonly _providerId: string;
   private readonly _externalTransactionId: string;
+  private readonly _roundId: string;
+  private readonly _gameId: string;
   private readonly _idempotencyKey: string;
   private readonly _payloadHash: string;
   private readonly _kind: WagerTransactionKind;
@@ -72,6 +78,8 @@ export class WagerTransaction {
     this._playerId = props.playerId;
     this._providerId = props.providerId;
     this._externalTransactionId = props.externalTransactionId;
+    this._roundId = props.roundId;
+    this._gameId = props.gameId;
     this._idempotencyKey = props.idempotencyKey;
     this._payloadHash = props.payloadHash;
     this._kind = props.kind;
@@ -99,6 +107,8 @@ export class WagerTransaction {
       playerId: state.playerId,
       providerId: state.providerId,
       externalTransactionId: state.externalTransactionId,
+      roundId: state.roundId,
+      gameId: state.gameId,
       idempotencyKey: state.idempotencyKey,
       payloadHash: state.payloadHash,
       kind: state.kind,
@@ -117,6 +127,8 @@ export class WagerTransaction {
   get playerId(): string { return this._playerId; }
   get providerId(): string { return this._providerId; }
   get externalTransactionId(): string { return this._externalTransactionId; }
+  get roundId(): string { return this._roundId; }
+  get gameId(): string { return this._gameId; }
   get idempotencyKey(): string { return this._idempotencyKey; }
   get payloadHash(): string { return this._payloadHash; }
   get kind(): WagerTransactionKind { return this._kind; }
