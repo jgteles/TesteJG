@@ -1,5 +1,6 @@
 import { defineConfig, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Migrator } from '@mikro-orm/migrations';
+import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
 import { InboxMessageEntity } from './infrastructure/persistence/mikro-orm/inbox-message.entity';
 import { OutboxMessageEntity } from './infrastructure/persistence/mikro-orm/outbox-message.entity';
 import { WagerTransactionEntity } from './infrastructure/persistence/mikro-orm/wager-transaction.entity';
@@ -14,6 +15,7 @@ export default defineConfig({
   host: process.env.POSTGRES_HOST ?? 'localhost',
   port: Number(process.env.POSTGRES_PORT ?? 5432),
   forceUtcTimezone: true,
+  metadataProvider: ReflectMetadataProvider,
   extensions: [Migrator],
   migrations: {
     tableName: 'mikro_orm_migrations',

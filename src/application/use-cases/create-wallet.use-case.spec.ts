@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { MikroORM } from '@mikro-orm/core';
+import { randomUUID } from 'node:crypto';
 import config from '../../mikro-orm.config';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
 import {
@@ -17,7 +18,7 @@ describe('CreateWalletUseCase', () => {
 
   beforeAll(async () => {
     orm = await MikroORM.init(config);
-    await orm.getMigrator().up();
+    await orm.migrator.up();
   });
 
   afterAll(async () => {
@@ -28,7 +29,7 @@ describe('CreateWalletUseCase', () => {
     const useCase = new CreateWalletUseCase(orm);
 
     const result = await useCase.execute({
-      playerId: 'player-opening',
+      playerId: randomUUID(),
       initialBalance: { amount: '25.00', currency: 'BRL' },
     });
 

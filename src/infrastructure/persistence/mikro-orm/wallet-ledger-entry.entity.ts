@@ -1,4 +1,5 @@
-import { Entity, Enum, ManyToOne, PrimaryKey, Property, type Rel } from '@mikro-orm/core';
+import type { Rel } from '@mikro-orm/core';
+import { Entity, Enum, ManyToOne, PrimaryKey, Property } from '@mikro-orm/decorators/legacy';
 import { WalletEntity } from './wallet.entity';
 import { WagerTransactionEntity } from './wager-transaction.entity';
 

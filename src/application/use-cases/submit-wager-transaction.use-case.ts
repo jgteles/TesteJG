@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { LockMode, MikroORM } from '@mikro-orm/core';
+import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import { Money } from '../../domain/money';
 import { Wallet } from '../../domain/wallet';
 import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
@@ -9,6 +10,7 @@ import { InsufficientFundsError } from '../../domain/errors';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
 import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionStatusEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
+import { WalletLedgerEntry } from '../../domain/wallet-ledger-entry';
 
 export interface SubmitWagerTransactionInput {
   walletId: string;
@@ -32,6 +34,8 @@ export interface SubmitWagerTransactionOutput {
   kind: WagerTransactionKind;
   status: WagerTransactionStatus;
   amount: { amount: string; currency: string };
+  balance: { amount: string; currency: string };
+  idempotentReplay: boolean;
   failureCode?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -44,17 +48,33 @@ export class SubmitWagerTransactionUseCase {
   async execute(input: SubmitWagerTransactionInput): Promise<SubmitWagerTransactionOutput> {
     const currency = (input.currency ?? 'BRL').trim().toUpperCase();
     const amount = Money.from({ amount: input.amount, currency });
+    if (!amount.isPositive()) {
+      throw new BadRequestException('Amount must be greater than zero');
+    }
     const idempotencyKey = input.idempotencyKey ?? `${input.providerId}:${input.externalTransactionId}`;
     const payloadHash = this.buildPayloadHash(input, amount);
 
     return this.orm.em.transactional(async (em) => {
+      const sqlEm = em as unknown as PostgreSqlEntityManager;
+
+      // Claim the key before checking the transaction. A concurrent delivery
+      // blocks on this row and resumes only after the first one commits.
+      await sqlEm.execute(
+        'insert into idempotency_keys (key) values (?) on conflict do nothing',
+        [idempotencyKey],
+      );
+      await sqlEm.execute(
+        'select key from idempotency_keys where key = ? for update',
+        [idempotencyKey],
+      );
+
       const existing = await em.findOne(WagerTransactionEntity, { idempotencyKey });
       if (existing) {
         if (existing.payloadHash !== payloadHash) {
           throw new ConflictException('Idempotency key already used with a different payload');
         }
 
-        return this.toOutput(existing);
+        return this.toOutput(existing, true);
       }
 
       const walletEntity = await em.findOne(
@@ -150,6 +170,7 @@ export class SubmitWagerTransactionUseCase {
         status: this.toEntityStatus(tx.status),
         payloadHash: tx.payloadHash,
         failureCode: tx.failureCode,
+        balanceAfter: wallet.balance.toString(),
         createdAt: tx.createdAt,
         updatedAt: tx.updatedAt,
       });
@@ -157,21 +178,31 @@ export class SubmitWagerTransactionUseCase {
       em.persist(entity);
 
       if (ledgerType && balanceBefore && balanceAfter) {
-        const ledgerEntry = em.create(WalletLedgerEntryEntity, {
+        const domainLedgerEntry = WalletLedgerEntry.create({
           id: randomUUID(),
+          walletId: wallet.id,
+          transactionId: tx.id,
+          type: ledgerType,
+          amount,
+          balanceBefore,
+          balanceAfter,
+        });
+
+        const ledgerEntry = em.create(WalletLedgerEntryEntity, {
+          id: domainLedgerEntry.id,
           wallet: walletEntity,
           transaction: entity,
           entryType: ledgerType,
-          amount: amount.toString(),
-          balanceBefore: balanceBefore.toString(),
-          balanceAfter: balanceAfter.toString(),
-          createdAt: new Date(),
+          amount: domainLedgerEntry.amount.toString(),
+          balanceBefore: domainLedgerEntry.balanceBefore.toString(),
+          balanceAfter: domainLedgerEntry.balanceAfter.toString(),
+          createdAt: domainLedgerEntry.createdAt,
         });
 
         em.persist(ledgerEntry);
       }
 
-      return this.toOutput(entity);
+      return this.toOutput(entity, false, wallet.balance);
     });
   }
 
@@ -216,7 +247,16 @@ export class SubmitWagerTransactionUseCase {
     }
   }
 
-  private toOutput(entity: WagerTransactionEntity): SubmitWagerTransactionOutput {
+  private toOutput(
+    entity: WagerTransactionEntity,
+    idempotentReplay: boolean,
+    currentBalance?: Money,
+  ): SubmitWagerTransactionOutput {
+    const balance = currentBalance ?? Money.from({
+      amount: entity.balanceAfter,
+      currency: entity.currency,
+    });
+
     return {
       id: entity.id,
       walletId: entity.wallet.id,
@@ -227,6 +267,8 @@ export class SubmitWagerTransactionUseCase {
       kind: this.fromEntityKind(entity.kind),
       status: this.fromEntityStatus(entity.status),
       amount: { amount: entity.amount, currency: entity.currency },
+      balance: balance.toJSON(),
+      idempotentReplay,
       failureCode: entity.failureCode,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,

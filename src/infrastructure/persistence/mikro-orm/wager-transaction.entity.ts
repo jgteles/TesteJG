@@ -1,4 +1,5 @@
-import { Entity, Enum, ManyToOne, PrimaryKey, Property, type Rel } from '@mikro-orm/core';
+import type { Rel } from '@mikro-orm/core';
+import { Entity, Enum, ManyToOne, PrimaryKey, Property } from '@mikro-orm/decorators/legacy';
 import { WalletEntity } from './wallet.entity';
 
 export enum WagerTransactionKindEntity {
@@ -54,6 +55,9 @@ export class WagerTransactionEntity {
 
   @Property({ columnType: 'varchar(64)', nullable: true })
   failureCode?: string;
+
+  @Property({ columnType: 'numeric(19,2)' })
+  balanceAfter!: string;
 
   @Property({ columnType: 'timestamptz', defaultRaw: 'CURRENT_TIMESTAMP' })
   createdAt!: Date;

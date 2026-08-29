@@ -86,6 +86,7 @@ export class CreateWalletUseCase {
           referenceExternalTransactionId: null,
           status: WagerTransactionStatusEntity.PROCESSED,
           payloadHash: openingHash,
+          balanceAfter: initialBalance.toString(),
           createdAt: new Date(),
           updatedAt: new Date(),
         });
