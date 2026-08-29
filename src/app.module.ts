@@ -4,6 +4,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { WalletsController } from './application/controllers/wallets.controller';
 import { WagerTransactionsController } from './application/controllers/wager-transactions.controller';
 import { CreateWalletUseCase } from './application/use-cases/create-wallet.use-case';
+import { ReconcileWalletUseCase } from './application/use-cases/reconcile-wallet.use-case';
 import { SubmitWagerTransactionUseCase } from './application/use-cases/submit-wager-transaction.use-case';
 import { ReprocessPendingReferenceUseCase } from './application/use-cases/reprocess-pending-reference.use-case';
 import { HealthController } from './health/health.controller';
@@ -18,6 +19,7 @@ import { WagerTransactionsConsumerService } from './infrastructure/messaging/wag
   controllers: [HealthController, WalletsController, WagerTransactionsController],
   providers: [
     CreateWalletUseCase,
+    ReconcileWalletUseCase,
     SubmitWagerTransactionUseCase,
     ReprocessPendingReferenceUseCase,
     MigrationRunnerService,
