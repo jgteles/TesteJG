@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { BeforeApplicationShutdown, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  BeforeApplicationShutdown,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  Optional,
+} from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import {
@@ -42,12 +48,13 @@ export interface ConsumeMessagesResult {
 }
 
 @Injectable()
-export class WagerTransactionsConsumerService implements BeforeApplicationShutdown {
+export class WagerTransactionsConsumerService implements OnApplicationBootstrap, BeforeApplicationShutdown {
   private readonly logger = new Logger(WagerTransactionsConsumerService.name);
   private readonly sqs: SQSClient;
   private readonly queueUrl: string;
   private acceptingMessages = true;
   private readonly inFlight = new Set<Promise<void>>();
+  private consumeLoop?: Promise<void>;
 
   constructor(
     private readonly orm: MikroORM,
@@ -65,6 +72,10 @@ export class WagerTransactionsConsumerService implements BeforeApplicationShutdo
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
       },
     });
+  }
+
+  onApplicationBootstrap(): void {
+    this.consumeLoop = this.runConsumeLoop();
   }
 
   async consumeOnce(maxMessages = 10, queueUrl = this.queueUrl): Promise<ConsumeMessagesResult> {
@@ -104,8 +115,21 @@ export class WagerTransactionsConsumerService implements BeforeApplicationShutdo
 
   async beforeApplicationShutdown(): Promise<void> {
     this.acceptingMessages = false;
+    await this.consumeLoop;
     await Promise.allSettled(this.inFlight);
     this.sqs.destroy();
+  }
+
+  private async runConsumeLoop(): Promise<void> {
+    while (this.acceptingMessages) {
+      try {
+        await this.consumeOnce();
+      } catch (error) {
+        if (this.acceptingMessages) {
+          this.logger.error({ event: 'wager_consumer_poll_failed', error: String(error) });
+        }
+      }
+    }
   }
 
   private async processMessageInternal(message: Message, queueUrl: string): Promise<void> {

@@ -3,6 +3,26 @@ import type { Message } from '@aws-sdk/client-sqs';
 import { WagerTransactionsConsumerService } from './wager-transactions-consumer.service';
 
 describe('WagerTransactionsConsumerService shutdown', () => {
+  it('starts its consume loop with the application and stops it on shutdown', async () => {
+    const consumer = new WagerTransactionsConsumerService({} as never, {} as never);
+    let finishPoll!: () => void;
+    let polls = 0;
+    consumer.consumeOnce = async () => {
+      polls += 1;
+      await new Promise<void>((resolve) => { finishPoll = resolve; });
+      return { received: 0, processed: 0, failed: 0 };
+    };
+
+    consumer.onApplicationBootstrap();
+    expect(polls).toBe(1);
+
+    const shutdown = consumer.beforeApplicationShutdown();
+    finishPoll();
+    await shutdown;
+
+    expect(polls).toBe(1);
+  });
+
   it('stops accepting work and waits for processing already in progress', async () => {
     const consumer = new WagerTransactionsConsumerService(
       {} as never,

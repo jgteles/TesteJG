@@ -1,4 +1,11 @@
-import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import {
+  BeforeApplicationShutdown,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+  Optional,
+} from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
@@ -18,18 +25,22 @@ export interface PublishOutboxResult {
 }
 
 @Injectable()
-export class OutboxPublisherService implements OnModuleDestroy {
+export class OutboxPublisherService implements OnApplicationBootstrap, BeforeApplicationShutdown, OnModuleDestroy {
   private readonly logger = new Logger(OutboxPublisherService.name);
   private readonly sqs: SQSClient;
   private readonly queueUrl: string;
+  private running = true;
+  private publishLoop?: Promise<void>;
+  private pollTimer?: ReturnType<typeof setTimeout>;
+  private finishPollWait?: () => void;
 
   constructor(
     private readonly orm: MikroORM,
     @Optional() private readonly metrics?: OperationalMetricsService,
   ) {
     const endpoint = process.env.AWS_ENDPOINT_URL ?? 'http://localhost:4566';
-    this.queueUrl = process.env.WAGER_TRANSACTIONS_QUEUE_URL
-      ?? `${endpoint}/000000000000/wager-transactions.fifo`;
+    this.queueUrl = process.env.WAGER_EVENTS_QUEUE_URL
+      ?? `${endpoint}/000000000000/wager-events.fifo`;
     this.sqs = new SQSClient({
       region: process.env.AWS_DEFAULT_REGION ?? 'us-east-1',
       endpoint,
@@ -38,6 +49,10 @@ export class OutboxPublisherService implements OnModuleDestroy {
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
       },
     });
+  }
+
+  onApplicationBootstrap(): void {
+    this.publishLoop = this.runPublishLoop();
   }
 
   async publishPending(limit = 10, queueUrl = this.queueUrl): Promise<PublishOutboxResult> {
@@ -122,6 +137,36 @@ export class OutboxPublisherService implements OnModuleDestroy {
       if (typeof providerId === 'string') return providerId;
     }
     return undefined;
+  }
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.running = false;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.finishPollWait?.();
+    await this.publishLoop;
+  }
+
+  private async runPublishLoop(): Promise<void> {
+    while (this.running) {
+      try {
+        await this.publishPending();
+      } catch (error) {
+        if (this.running) {
+          this.logger.error({ event: 'outbox_poll_failed', error: String(error) });
+        }
+      }
+      if (this.running) await this.waitForNextPoll();
+    }
+  }
+
+  private waitForNextPoll(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.finishPollWait = resolve;
+      this.pollTimer = setTimeout(resolve, 1_000);
+    }).finally(() => {
+      this.pollTimer = undefined;
+      this.finishPollWait = undefined;
+    });
   }
 
   onModuleDestroy(): void {

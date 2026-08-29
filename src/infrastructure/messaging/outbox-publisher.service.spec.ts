@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { randomUUID } from 'node:crypto';
 import { MikroORM } from '@mikro-orm/core';
 import {
+  CreateQueueCommand,
   DeleteMessageBatchCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
@@ -15,6 +16,7 @@ describe('OutboxPublisherService', () => {
   let orm: MikroORM;
   let sqs: SQSClient;
   let queueUrl: string;
+  let eventsQueueUrl: string;
 
   beforeAll(async () => {
     orm = await MikroORM.init(config);
@@ -26,11 +28,17 @@ describe('OutboxPublisherService', () => {
     });
     const queue = await sqs.send(new GetQueueUrlCommand({ QueueName: 'wager-transactions.fifo' }));
     queueUrl = queue.QueueUrl!;
+    const eventsQueue = await sqs.send(new CreateQueueCommand({
+      QueueName: 'wager-events.fifo',
+      Attributes: { FifoQueue: 'true', ContentBasedDeduplication: 'false' },
+    }));
+    eventsQueueUrl = eventsQueue.QueueUrl!;
   });
 
   beforeEach(async () => {
     await orm.em.fork().nativeDelete(OutboxMessageEntity, {});
     await drainQueue();
+    await drainQueue(eventsQueueUrl);
   });
 
   afterAll(async () => {
@@ -52,6 +60,20 @@ describe('OutboxPublisherService', () => {
     const messages = await receiveMessages();
     expect(messages).toHaveLength(1);
     expect(JSON.parse(messages[0].Body!).eventId).toBe(messageId);
+    await deleteMessages(messages);
+  });
+
+  it('publishes outbox events to the events queue instead of the transaction input queue', async () => {
+    const messageId = await insertPendingMessage(randomUUID());
+    const publisher = new OutboxPublisherService(orm);
+
+    expect(await publisher.publishPending()).toEqual({ selected: 1, published: 1, failed: 0 });
+
+    expect(await receiveMessages(1, queueUrl)).toHaveLength(0);
+    const events = await receiveMessages(1, eventsQueueUrl);
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].Body!).eventId).toBe(messageId);
+    await deleteMessages(events, eventsQueueUrl);
   });
 
   it('keeps a message pending when SQS publication fails and publishes it on a later attempt', async () => {
@@ -76,6 +98,7 @@ describe('OutboxPublisherService', () => {
     const messages = await receiveMessages();
     expect(messages).toHaveLength(1);
     expect(JSON.parse(messages[0].Body!).eventId).toBe(messageId);
+    await deleteMessages(messages);
   });
 
   it('does not let two publisher instances publish the same pending message', async () => {
@@ -92,7 +115,9 @@ describe('OutboxPublisherService', () => {
     const stored = await orm.em.fork().findOneOrFail(OutboxMessageEntity, { id: messageId });
     expect(stored.status).toBe('PUBLISHED');
     expect(stored.attempts).toBe(1);
-    expect(await receiveMessages()).toHaveLength(1);
+    const messages = await receiveMessages();
+    expect(messages).toHaveLength(1);
+    await deleteMessages(messages);
   });
 
   it('allows different pending messages to be processed by concurrent publishers', async () => {
@@ -112,7 +137,9 @@ describe('OutboxPublisherService', () => {
     });
     expect(stored).toHaveLength(2);
     expect(stored.every((message) => message.status === 'PUBLISHED')).toBe(true);
-    expect(await receiveMessages()).toHaveLength(2);
+    const messages = await receiveMessages();
+    expect(messages).toHaveLength(2);
+    await deleteMessages(messages);
   });
 
   async function insertPendingMessage(walletId: string): Promise<string> {
@@ -143,26 +170,39 @@ describe('OutboxPublisherService', () => {
     return id;
   }
 
-  async function receiveMessages() {
+  async function receiveMessages(maxNumberOfMessages = 10, targetQueueUrl = queueUrl) {
     const response = await sqs.send(new ReceiveMessageCommand({
-      QueueUrl: queueUrl,
-      MaxNumberOfMessages: 10,
+      QueueUrl: targetQueueUrl,
+      MaxNumberOfMessages: maxNumberOfMessages,
       WaitTimeSeconds: 1,
     }));
     return response.Messages ?? [];
   }
 
-  async function drainQueue(): Promise<void> {
+  async function drainQueue(targetQueueUrl = queueUrl): Promise<void> {
     for (;;) {
-      const messages = await receiveMessages();
+      const messages = await receiveMessages(10, targetQueueUrl);
       if (messages.length === 0) return;
       await sqs.send(new DeleteMessageBatchCommand({
-        QueueUrl: queueUrl,
+        QueueUrl: targetQueueUrl,
         Entries: messages.map((message, index) => ({
           Id: String(index),
           ReceiptHandle: message.ReceiptHandle!,
         })),
       }));
     }
+  }
+
+  async function deleteMessages(
+    messages: Awaited<ReturnType<typeof receiveMessages>>,
+    targetQueueUrl = queueUrl,
+  ): Promise<void> {
+    await sqs.send(new DeleteMessageBatchCommand({
+      QueueUrl: targetQueueUrl,
+      Entries: messages.map((message, index) => ({
+        Id: String(index),
+        ReceiptHandle: message.ReceiptHandle!,
+      })),
+    }));
   }
 });

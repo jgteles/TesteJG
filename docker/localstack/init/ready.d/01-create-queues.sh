@@ -27,6 +27,11 @@ awslocal sqs set-queue-attributes \
   --queue-url "$main_queue_url" \
   --attributes "$queue_attributes"
 
+awslocal sqs create-queue \
+  --queue-name wager-events.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=false
+
 printf 'Created SQS queues:\n'
 printf '  %s\n' "$dead_letter_url"
 awslocal sqs get-queue-url --queue-name wager-transactions.fifo
+awslocal sqs get-queue-url --queue-name wager-events.fifo
