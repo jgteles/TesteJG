@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { MikroORM } from '@mikro-orm/core';
+import { LockMode, MikroORM } from '@mikro-orm/core';
 import { Money } from '../../domain/money';
+import { Wallet } from '../../domain/wallet';
 import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
 import { InsufficientFundsError } from '../../domain/errors';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
@@ -56,14 +57,29 @@ export class SubmitWagerTransactionUseCase {
         return this.toOutput(existing);
       }
 
-      const wallet = await em.findOne(WalletEntity, { id: input.walletId });
-      if (!wallet) {
+      const walletEntity = await em.findOne(
+        WalletEntity,
+        { id: input.walletId },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      );
+
+      if (!walletEntity) {
         throw new NotFoundException(`Wallet ${input.walletId} not found`);
       }
 
-      if (wallet.playerId !== input.playerId) {
+      if (walletEntity.playerId !== input.playerId) {
         throw new BadRequestException('Wallet does not belong to the provided player');
       }
+
+      const wallet = Wallet.rehydrate({
+        id: walletEntity.id,
+        playerId: walletEntity.playerId,
+        currency: walletEntity.currency,
+        balance: Money.from({ amount: walletEntity.balanceAmount, currency: walletEntity.currency }),
+        version: walletEntity.version,
+        createdAt: walletEntity.createdAt,
+        updatedAt: walletEntity.updatedAt,
+      });
 
       const transactionId = randomUUID();
       const tx = WagerTransaction.create({
@@ -83,18 +99,24 @@ export class SubmitWagerTransactionUseCase {
       let status = WagerTransactionStatus.PROCESSED;
       let failureCode: string | undefined;
       let ledgerType: WalletLedgerEntryType | undefined;
+      let balanceBefore: Money | undefined;
+      let balanceAfter: Money | undefined;
 
       try {
-        if (input.kind === WagerTransactionKind.BET || input.kind === WagerTransactionKind.LOSS) {
-          wallet.balanceAmount = (Number(wallet.balanceAmount) - Number(amount.toString())).toFixed(2);
+        if (input.kind === WagerTransactionKind.BET) {
+          balanceBefore = wallet.balance;
+          wallet.debit(amount);
+          balanceAfter = wallet.balance;
           ledgerType = WalletLedgerEntryType.DEBIT;
         } else if (input.kind === WagerTransactionKind.WIN) {
-          wallet.balanceAmount = (Number(wallet.balanceAmount) + Number(amount.toString())).toFixed(2);
+          balanceBefore = wallet.balance;
+          wallet.credit(amount);
+          balanceAfter = wallet.balance;
           ledgerType = WalletLedgerEntryType.CREDIT;
-        }
-
-        if (Number(wallet.balanceAmount) < 0) {
-          throw new InsufficientFundsError();
+        } else if (input.kind === WagerTransactionKind.LOSS) {
+          // No balance mutation and no ledger entry: LOSS only records the outcome.
+        } else {
+          throw new BadRequestException(`Unsupported wager kind: ${String(input.kind)}`);
         }
       } catch (error) {
         if (error instanceof InsufficientFundsError) {
@@ -110,12 +132,13 @@ export class SubmitWagerTransactionUseCase {
         tx.markProcessed();
       }
 
-      wallet.version += 1;
-      wallet.updatedAt = new Date();
+      walletEntity.balanceAmount = wallet.balance.toString();
+      walletEntity.version = wallet.version;
+      walletEntity.updatedAt = wallet.updatedAt;
 
       const entity = em.create(WagerTransactionEntity, {
         id: tx.id,
-        wallet: wallet,
+        wallet: walletEntity,
         playerId: tx.playerId,
         providerId: tx.providerId,
         externalTransactionId: tx.externalTransactionId,
@@ -133,18 +156,15 @@ export class SubmitWagerTransactionUseCase {
 
       em.persist(entity);
 
-      if (ledgerType) {
-        const balanceBefore = Number(wallet.balanceAmount) - Number(amount.toString());
-        const balanceAfter = Number(wallet.balanceAmount);
-
+      if (ledgerType && balanceBefore && balanceAfter) {
         const ledgerEntry = em.create(WalletLedgerEntryEntity, {
           id: randomUUID(),
-          wallet: wallet,
+          wallet: walletEntity,
           transaction: entity,
           entryType: ledgerType,
           amount: amount.toString(),
-          balanceBefore: balanceBefore.toFixed(2),
-          balanceAfter: balanceAfter.toFixed(2),
+          balanceBefore: balanceBefore.toString(),
+          balanceAfter: balanceAfter.toString(),
           createdAt: new Date(),
         });
 
