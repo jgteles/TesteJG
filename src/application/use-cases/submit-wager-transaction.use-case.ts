@@ -41,6 +41,7 @@ export interface SubmitWagerTransactionOutput {
   balance: { amount: string; currency: string };
   idempotentReplay: boolean;
   failureCode?: string;
+  referenceTransactionId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -127,6 +128,7 @@ export class SubmitWagerTransactionUseCase {
       let ledgerType: WalletLedgerEntryType | undefined;
       let balanceBefore: Money | undefined;
       let balanceAfter: Money | undefined;
+      let referenceEntity: WagerTransactionEntity | null = null;
 
       try {
         if (input.kind === WagerTransactionKind.BET) {
@@ -141,6 +143,41 @@ export class SubmitWagerTransactionUseCase {
           ledgerType = WalletLedgerEntryType.CREDIT;
         } else if (input.kind === WagerTransactionKind.LOSS) {
           // No balance mutation and no ledger entry: LOSS only records the outcome.
+        } else if (tx.requiresReference()) {
+          referenceEntity = await em.findOne(WagerTransactionEntity, {
+            providerId: input.providerId,
+            externalTransactionId: input.referenceExternalTransactionId!,
+          });
+
+          if (!referenceEntity) {
+            status = WagerTransactionStatus.PENDING_REFERENCE;
+            tx.markPendingReference();
+          } else {
+            failureCode = await this.validateReference(em, tx, referenceEntity);
+            if (failureCode) {
+              status = WagerTransactionStatus.REJECTED;
+              tx.markRejected(failureCode);
+            } else {
+              balanceBefore = wallet.balance;
+              const shouldCredit = input.kind === WagerTransactionKind.REFUND
+                || referenceEntity.kind === WagerTransactionKindEntity.BET;
+              if (shouldCredit) {
+                wallet.credit(amount);
+                ledgerType = WalletLedgerEntryType.CREDIT;
+              } else {
+                try {
+                  wallet.debit(amount);
+                  ledgerType = WalletLedgerEntryType.DEBIT;
+                } catch (error) {
+                  if (!(error instanceof InsufficientFundsError)) throw error;
+                  status = WagerTransactionStatus.REJECTED;
+                  failureCode = 'REVERSAL_WOULD_CAUSE_NEGATIVE_BALANCE';
+                  tx.markRejected(failureCode);
+                }
+              }
+              if (status === WagerTransactionStatus.PROCESSED) balanceAfter = wallet.balance;
+            }
+          }
         } else {
           throw new BadRequestException(`Unsupported wager kind: ${String(input.kind)}`);
         }
@@ -155,7 +192,7 @@ export class SubmitWagerTransactionUseCase {
       }
 
       if (status === WagerTransactionStatus.PROCESSED) {
-        tx.markProcessed();
+        tx.markProcessed(referenceEntity?.id);
       }
 
       walletEntity.balanceAmount = wallet.balance.toString();
@@ -175,6 +212,7 @@ export class SubmitWagerTransactionUseCase {
         amount: tx.amount.toString(),
         currency: tx.currency,
         referenceExternalTransactionId: tx.referenceExternalTransactionId,
+        referenceTransactionId: tx.referenceTransactionId,
         status: this.toEntityStatus(tx.status),
         payloadHash: tx.payloadHash,
         failureCode: tx.failureCode,
@@ -239,6 +277,10 @@ export class SubmitWagerTransactionUseCase {
         return WagerTransactionKindEntity.WIN;
       case WagerTransactionKind.LOSS:
         return WagerTransactionKindEntity.LOSS;
+      case WagerTransactionKind.REFUND:
+        return WagerTransactionKindEntity.REFUND;
+      case WagerTransactionKind.ROLLBACK:
+        return WagerTransactionKindEntity.ROLLBACK;
       default:
         throw new BadRequestException(`Unsupported wager kind: ${String(kind)}`);
     }
@@ -248,6 +290,8 @@ export class SubmitWagerTransactionUseCase {
     switch (status) {
       case WagerTransactionStatus.PENDING:
         return WagerTransactionStatusEntity.PENDING;
+      case WagerTransactionStatus.PENDING_REFERENCE:
+        return WagerTransactionStatusEntity.PENDING_REFERENCE;
       case WagerTransactionStatus.PROCESSED:
         return WagerTransactionStatusEntity.PROCESSED;
       case WagerTransactionStatus.REJECTED:
@@ -282,6 +326,7 @@ export class SubmitWagerTransactionUseCase {
       balance: balance.toJSON(),
       idempotentReplay,
       failureCode: entity.failureCode,
+      referenceTransactionId: entity.referenceTransactionId,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     };
@@ -295,6 +340,10 @@ export class SubmitWagerTransactionUseCase {
         return WagerTransactionKind.WIN;
       case WagerTransactionKindEntity.LOSS:
         return WagerTransactionKind.LOSS;
+      case WagerTransactionKindEntity.REFUND:
+        return WagerTransactionKind.REFUND;
+      case WagerTransactionKindEntity.ROLLBACK:
+        return WagerTransactionKind.ROLLBACK;
       default:
         throw new BadRequestException(`Unsupported persisted kind: ${String(kind)}`);
     }
@@ -304,6 +353,8 @@ export class SubmitWagerTransactionUseCase {
     switch (status) {
       case WagerTransactionStatusEntity.PENDING:
         return WagerTransactionStatus.PENDING;
+      case WagerTransactionStatusEntity.PENDING_REFERENCE:
+        return WagerTransactionStatus.PENDING_REFERENCE;
       case WagerTransactionStatusEntity.PROCESSED:
         return WagerTransactionStatus.PROCESSED;
       case WagerTransactionStatusEntity.REJECTED:
@@ -311,5 +362,36 @@ export class SubmitWagerTransactionUseCase {
       default:
         throw new BadRequestException(`Unsupported persisted status: ${String(status)}`);
     }
+  }
+
+  private async validateReference(
+    em: import('@mikro-orm/core').EntityManager,
+    transaction: WagerTransaction,
+    reference: WagerTransactionEntity,
+  ): Promise<string | undefined> {
+    if (reference.status !== WagerTransactionStatusEntity.PROCESSED) return 'REFERENCE_NOT_PROCESSED';
+    if (
+      reference.wallet.id !== transaction.walletId
+      || reference.playerId !== transaction.playerId
+      || reference.currency !== transaction.currency
+      || reference.roundId !== transaction.roundId
+    ) return 'REFERENCE_CONTEXT_MISMATCH';
+    if (reference.amount !== transaction.amount.toString()) return 'REFERENCE_AMOUNT_MISMATCH';
+
+    const allowed = transaction.kind === WagerTransactionKind.REFUND
+      ? reference.kind === WagerTransactionKindEntity.BET
+      : [
+          WagerTransactionKindEntity.BET,
+          WagerTransactionKindEntity.WIN,
+          WagerTransactionKindEntity.REFUND,
+        ].includes(reference.kind);
+    if (!allowed) return 'REFERENCE_TYPE_MISMATCH';
+
+    const previous = await em.findOne(WagerTransactionEntity, {
+      referenceTransactionId: reference.id,
+      kind: this.toEntityKind(transaction.kind),
+      status: WagerTransactionStatusEntity.PROCESSED,
+    });
+    return previous ? 'REFERENCE_ALREADY_REVERSED' : undefined;
   }
 }

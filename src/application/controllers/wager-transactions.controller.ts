@@ -24,6 +24,7 @@ export class WagerTransactionsController {
       amount: body.money.amount,
       currency: body.money.currency,
       idempotencyKey,
+      referenceExternalTransactionId: body.referenceExternalTransactionId,
     });
 
     if (result.status === WagerTransactionStatus.REJECTED) {

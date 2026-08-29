@@ -7,10 +7,13 @@ export enum WagerTransactionKindEntity {
   BET = 'BET',
   WIN = 'WIN',
   LOSS = 'LOSS',
+  REFUND = 'REFUND',
+  ROLLBACK = 'ROLLBACK',
 }
 
 export enum WagerTransactionStatusEntity {
   PENDING = 'PENDING',
+  PENDING_REFERENCE = 'PENDING_REFERENCE',
   PROCESSED = 'PROCESSED',
   REJECTED = 'REJECTED',
 }
@@ -52,6 +55,9 @@ export class WagerTransactionEntity {
 
   @Property({ columnType: 'varchar(255)', nullable: true })
   referenceExternalTransactionId?: string;
+
+  @Property({ columnType: 'varchar(36)', nullable: true })
+  referenceTransactionId?: string;
 
   @Enum(() => WagerTransactionStatusEntity)
   status!: WagerTransactionStatusEntity;

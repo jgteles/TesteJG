@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsDefined, IsEnum, IsString, Matches, ValidateNested } from 'class-validator';
+import { IsDefined, IsEnum, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
 import { WagerTransactionKind } from '../../domain/wager-transaction';
 import { MoneyDto } from './create-wallet.dto';
 
@@ -30,6 +30,11 @@ export class SubmitWagerTransactionDto {
 
   @IsEnum(WagerTransactionKind)
   kind!: WagerTransactionKind;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/\S/)
+  referenceExternalTransactionId?: string;
 
   @IsDefined()
   @ValidateNested()

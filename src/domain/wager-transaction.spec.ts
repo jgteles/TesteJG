@@ -43,4 +43,28 @@ describe('WagerTransaction', () => {
 
     expect(() => transaction.markRejected('INSUFFICIENT_FUNDS')).toThrow('Cannot transition');
   });
+
+  it('requires a provider reference for refunds and rollbacks', () => {
+    expect(() => WagerTransaction.create({
+      id: 'tx-refund', walletId: 'wallet-1', playerId: 'player-1', providerId: 'provider-1',
+      externalTransactionId: 'ext-refund', roundId: 'round-1', gameId: 'game-1',
+      idempotencyKey: 'idem-refund', payloadHash: 'hash-refund', kind: WagerTransactionKind.REFUND,
+      amount: Money.from({ amount: '10.00', currency: 'BRL' }), currency: 'BRL',
+    })).toThrow('requires a referenceExternalTransactionId');
+  });
+
+  it('moves an out-of-order reversal through pending reference to processed', () => {
+    const transaction = WagerTransaction.create({
+      id: 'tx-rollback', walletId: 'wallet-1', playerId: 'player-1', providerId: 'provider-1',
+      externalTransactionId: 'ext-rollback', roundId: 'round-1', gameId: 'game-1',
+      idempotencyKey: 'idem-rollback', payloadHash: 'hash-rollback', kind: WagerTransactionKind.ROLLBACK,
+      amount: Money.from({ amount: '10.00', currency: 'BRL' }), currency: 'BRL',
+      referenceExternalTransactionId: 'ext-bet',
+    });
+
+    transaction.markPendingReference().markProcessed('tx-bet');
+
+    expect(transaction.status).toBe(WagerTransactionStatus.PROCESSED);
+    expect(transaction.referenceTransactionId).toBe('tx-bet');
+  });
 });

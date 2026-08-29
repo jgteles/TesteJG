@@ -5,10 +5,13 @@ export enum WagerTransactionKind {
   BET = 'BET',
   WIN = 'WIN',
   LOSS = 'LOSS',
+  REFUND = 'REFUND',
+  ROLLBACK = 'ROLLBACK',
 }
 
 export enum WagerTransactionStatus {
   PENDING = 'PENDING',
+  PENDING_REFERENCE = 'PENDING_REFERENCE',
   PROCESSED = 'PROCESSED',
   REJECTED = 'REJECTED',
 }
@@ -27,6 +30,7 @@ export interface WagerTransactionProps {
   amount: Money;
   currency: string;
   referenceExternalTransactionId?: string;
+  referenceTransactionId?: string;
   status?: WagerTransactionStatus;
   failureCode?: string;
   createdAt?: Date;
@@ -47,6 +51,7 @@ export interface WagerTransactionState {
   amount: Money;
   currency: string;
   referenceExternalTransactionId?: string;
+  referenceTransactionId?: string;
   status: WagerTransactionStatus;
   failureCode?: string;
   createdAt: Date;
@@ -67,6 +72,7 @@ export class WagerTransaction {
   private readonly _amount: Money;
   private readonly _currency: string;
   private readonly _referenceExternalTransactionId?: string;
+  private _referenceTransactionId?: string;
   private _status: WagerTransactionStatus;
   private _failureCode?: string;
   private readonly _createdAt: Date;
@@ -86,6 +92,7 @@ export class WagerTransaction {
     this._amount = props.amount;
     this._currency = props.currency;
     this._referenceExternalTransactionId = props.referenceExternalTransactionId;
+    this._referenceTransactionId = props.referenceTransactionId;
     this._status = props.status ?? WagerTransactionStatus.PENDING;
     this._failureCode = props.failureCode;
     this._createdAt = props.createdAt ?? new Date();
@@ -95,6 +102,13 @@ export class WagerTransaction {
   static create(props: WagerTransactionProps): WagerTransaction {
     if (!Object.values(WagerTransactionKind).includes(props.kind)) {
       throw new Error(`Unsupported wager transaction kind: ${props.kind}`);
+    }
+
+    if (
+      (props.kind === WagerTransactionKind.REFUND || props.kind === WagerTransactionKind.ROLLBACK)
+      && !props.referenceExternalTransactionId?.trim()
+    ) {
+      throw new Error(`${props.kind} requires a referenceExternalTransactionId`);
     }
 
     return new WagerTransaction(props);
@@ -115,6 +129,7 @@ export class WagerTransaction {
       amount: state.amount,
       currency: state.currency,
       referenceExternalTransactionId: state.referenceExternalTransactionId,
+      referenceTransactionId: state.referenceTransactionId,
       status: state.status,
       failureCode: state.failureCode,
       createdAt: state.createdAt,
@@ -135,23 +150,35 @@ export class WagerTransaction {
   get amount(): Money { return this._amount; }
   get currency(): string { return this._currency; }
   get referenceExternalTransactionId(): string | undefined { return this._referenceExternalTransactionId; }
+  get referenceTransactionId(): string | undefined { return this._referenceTransactionId; }
   get status(): WagerTransactionStatus { return this._status; }
   get failureCode(): string | undefined { return this._failureCode; }
   get createdAt(): Date { return this._createdAt; }
   get updatedAt(): Date { return this._updatedAt; }
 
-  markProcessed(): WagerTransaction {
-    if (this._status !== WagerTransactionStatus.PENDING) {
+  markProcessed(referenceTransactionId?: string): WagerTransaction {
+    if (this._status !== WagerTransactionStatus.PENDING && this._status !== WagerTransactionStatus.PENDING_REFERENCE) {
       throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.PROCESSED);
     }
 
     this._status = WagerTransactionStatus.PROCESSED;
+    this._referenceTransactionId = referenceTransactionId;
+    this._updatedAt = new Date();
+    return this;
+  }
+
+
+  markPendingReference(): WagerTransaction {
+    if (this._status !== WagerTransactionStatus.PENDING) {
+      throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.PENDING_REFERENCE);
+    }
+    this._status = WagerTransactionStatus.PENDING_REFERENCE;
     this._updatedAt = new Date();
     return this;
   }
 
   markRejected(failureCode: string): WagerTransaction {
-    if (this._status !== WagerTransactionStatus.PENDING) {
+    if (this._status !== WagerTransactionStatus.PENDING && this._status !== WagerTransactionStatus.PENDING_REFERENCE) {
       throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.REJECTED);
     }
 
@@ -159,5 +186,10 @@ export class WagerTransaction {
     this._failureCode = failureCode;
     this._updatedAt = new Date();
     return this;
+  }
+
+
+  requiresReference(): boolean {
+    return this._kind === WagerTransactionKind.REFUND || this._kind === WagerTransactionKind.ROLLBACK;
   }
 }
