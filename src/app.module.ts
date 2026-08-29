@@ -15,10 +15,13 @@ import { OutboxPublisherService } from './infrastructure/messaging/outbox-publis
 import { WagerTransactionsConsumerService } from './infrastructure/messaging/wager-transactions-consumer.service';
 import { MetricsController, OperationalMetricsService } from './observability/operational-metrics.service';
 import { PendingReferenceWorkerService } from './infrastructure/messaging/pending-reference-worker.service';
+import { ProvidersController } from './application/controllers/providers.controller';
+import { QueryWalletsUseCase } from './application/use-cases/query-wallets.use-case';
+import { QueryWagerTransactionsUseCase } from './application/use-cases/query-wager-transactions.use-case';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
-  controllers: [HealthController, MetricsController, WalletsController, WagerTransactionsController],
+  controllers: [HealthController, MetricsController, WalletsController, WagerTransactionsController, ProvidersController],
   providers: [
     OperationalMetricsService,
     CreateWalletUseCase,
@@ -29,6 +32,8 @@ import { PendingReferenceWorkerService } from './infrastructure/messaging/pendin
     OutboxPublisherService,
     WagerTransactionsConsumerService,
     PendingReferenceWorkerService,
+    QueryWalletsUseCase,
+    QueryWagerTransactionsUseCase,
     { provide: APP_FILTER, useClass: ApplicationExceptionFilter },
   ],
 })

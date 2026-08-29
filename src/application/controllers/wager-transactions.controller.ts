@@ -1,11 +1,20 @@
-import { BadRequestException, Body, Controller, Headers, Post, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Param, Post, UnprocessableEntityException } from '@nestjs/common';
 import { SubmitWagerTransactionUseCase } from '../use-cases/submit-wager-transaction.use-case';
 import { WagerTransactionStatus } from '../../domain/wager-transaction';
 import { SubmitWagerTransactionDto } from '../dtos/submit-wager-transaction.dto';
+import { QueryWagerTransactionsUseCase } from '../use-cases/query-wager-transactions.use-case';
 
 @Controller('wagering')
 export class WagerTransactionsController {
-  constructor(private readonly submitWagerTransactionUseCase: SubmitWagerTransactionUseCase) {}
+  constructor(
+    private readonly submitWagerTransactionUseCase: SubmitWagerTransactionUseCase,
+    private readonly queryWagerTransactionsUseCase: QueryWagerTransactionsUseCase,
+  ) {}
+
+  @Get('transactions/:transactionId')
+  async getById(@Param('transactionId') transactionId: string) {
+    return this.queryWagerTransactionsUseCase.getById(transactionId);
+  }
 
   @Post('transactions')
   async create(@Headers('idempotency-key') idempotencyKey: string | undefined, @Body() body: SubmitWagerTransactionDto) {
