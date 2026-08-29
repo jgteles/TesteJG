@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { MikroORM } from '@mikro-orm/core';
+import { LockMode, MikroORM } from '@mikro-orm/core';
 import config from '../../mikro-orm.config';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
@@ -155,6 +155,216 @@ describe('SubmitWagerTransactionUseCase', () => {
     });
     expect(debits).toBe(1);
   });
+
+  it('applies 50 identical concurrent requests only once', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const idempotencyKey = randomUUID();
+    const input = {
+      walletId: wallet.id,
+      playerId,
+      providerId: `provider-fifty-retries-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-fifty-retries',
+      externalTransactionId: randomUUID(),
+      idempotencyKey,
+      kind: WagerTransactionKind.BET,
+      amount: '30.00',
+      currency: 'BRL',
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => submit.execute(input)),
+    );
+
+    expect(new Set(results.map((result) => result.id)).size).toBe(1);
+    expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
+    expect(results.filter((result) => result.idempotentReplay)).toHaveLength(49);
+    expect(results.every((result) => result.status === WagerTransactionStatus.PROCESSED)).toBe(true);
+    expect(results.every((result) => result.balance.amount === '70.00')).toBe(true);
+
+    const readEm = orm.em.fork();
+    const storedWallet = await readEm.findOneOrFail(WalletEntity, { id: wallet.id });
+    const transactionCount = await readEm.count(WagerTransactionEntity, { idempotencyKey });
+    const ledgerEntries = await readEm.find(WalletLedgerEntryEntity, {
+      wallet: { id: wallet.id },
+    }, { orderBy: { createdAt: 'asc', id: 'asc' } });
+
+    expect(transactionCount).toBe(1);
+    expect(ledgerEntries.filter((entry) => entry.entryType === WalletLedgerEntryType.DEBIT)).toHaveLength(1);
+    expect(ledgerEntries.map((entry) => [entry.balanceBefore, entry.balanceAfter])).toEqual([
+      ['0.00', '100.00'],
+      ['100.00', '70.00'],
+    ]);
+    expect(storedWallet.balanceAmount).toBe(ledgerEntries.at(-1)?.balanceAfter);
+  }, 20_000);
+
+  it('rejects an idempotency key reused with a different payload', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const idempotencyKey = randomUUID();
+    const input = {
+      walletId: wallet.id,
+      playerId,
+      providerId: `provider-divergent-retry-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-divergent-retry',
+      externalTransactionId: randomUUID(),
+      idempotencyKey,
+      kind: WagerTransactionKind.BET,
+      amount: '30.00',
+      currency: 'BRL',
+    };
+
+    await submit.execute(input);
+
+    await expect(submit.execute({ ...input, amount: '31.00' }))
+      .rejects.toThrow('Idempotency key already used with a different payload');
+
+    const readEm = orm.em.fork();
+    expect(await readEm.count(WagerTransactionEntity, { idempotencyKey })).toBe(1);
+    expect(await readEm.count(WalletLedgerEntryEntity, {
+      wallet: { id: wallet.id },
+      entryType: WalletLedgerEntryType.DEBIT,
+    })).toBe(1);
+    expect((await readEm.findOneOrFail(WalletEntity, { id: wallet.id })).balanceAmount).toBe('70.00');
+  });
+
+  it('does not block a different wallet while one wallet is locked', async () => {
+    const playerA = randomUUID();
+    const playerB = randomUUID();
+    const walletA = await createWallet.execute({
+      playerId: playerA,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const walletB = await createWallet.execute({
+      playerId: playerB,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+    const released = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const heldLock = orm.em.fork().transactional(async (em) => {
+      await em.findOneOrFail(WalletEntity, { id: walletA.id }, {
+        lockMode: LockMode.PESSIMISTIC_WRITE,
+      });
+      signalLocked();
+      await released;
+    });
+
+    await locked;
+    const betA = submit.execute({
+      walletId: walletA.id,
+      playerId: playerA,
+      providerId: `provider-independent-wallet-a-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-independent-wallets',
+      externalTransactionId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.BET,
+      amount: '25.00',
+      currency: 'BRL',
+    });
+    const betB = submit.execute({
+      walletId: walletB.id,
+      playerId: playerB,
+      providerId: `provider-independent-wallet-b-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-independent-wallets',
+      externalTransactionId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.BET,
+      amount: '40.00',
+      currency: 'BRL',
+    });
+
+    let resultB: Awaited<typeof betB>;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      resultB = await Promise.race([
+        betB,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error('A lock on wallet A blocked wallet B')),
+            2_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseLock();
+      await heldLock;
+    }
+    const resultA = await betA;
+
+    expect(resultA.balance.amount).toBe('75.00');
+    expect(resultB.balance.amount).toBe('60.00');
+
+    const readEm = orm.em.fork();
+    const storedA = await readEm.findOneOrFail(WalletEntity, { id: walletA.id });
+    const storedB = await readEm.findOneOrFail(WalletEntity, { id: walletB.id });
+    expect(storedA.balanceAmount).toBe('75.00');
+    expect(storedB.balanceAmount).toBe('60.00');
+    expect(await readEm.count(WalletLedgerEntryEntity, {
+      wallet: { id: { $in: [walletA.id, walletB.id] } },
+      entryType: WalletLedgerEntryType.DEBIT,
+    })).toBe(2);
+  }, 10_000);
+
+  it('keeps idempotency correct across three independent ORM instances', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const input = {
+      walletId: wallet.id,
+      playerId,
+      providerId: `provider-three-instances-${randomUUID()}`,
+      roundId: randomUUID(),
+      gameId: 'game-three-instances',
+      externalTransactionId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      kind: WagerTransactionKind.BET,
+      amount: '35.00',
+      currency: 'BRL',
+    };
+    const independentOrms = await Promise.all([
+      MikroORM.init(config),
+      MikroORM.init(config),
+      MikroORM.init(config),
+    ]);
+
+    try {
+      const results = await Promise.all(
+        independentOrms.map((instance) => new SubmitWagerTransactionUseCase(instance).execute(input)),
+      );
+
+      expect(new Set(results.map((result) => result.id)).size).toBe(1);
+      expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
+      expect(results.filter((result) => result.idempotentReplay)).toHaveLength(2);
+      expect(results.every((result) => result.balance.amount === '65.00')).toBe(true);
+
+      const readEm = orm.em.fork();
+      expect(await readEm.count(WagerTransactionEntity, {
+        idempotencyKey: input.idempotencyKey,
+      })).toBe(1);
+      expect(await readEm.count(WalletLedgerEntryEntity, {
+        wallet: { id: wallet.id },
+        entryType: WalletLedgerEntryType.DEBIT,
+      })).toBe(1);
+      expect((await readEm.findOneOrFail(WalletEntity, { id: wallet.id })).balanceAmount).toBe('65.00');
+    } finally {
+      await Promise.all(independentOrms.map((instance) => instance.close()));
+    }
+  }, 20_000);
 
   it('processes REFUND and ROLLBACK references with inverse ledger entries', async () => {
     const playerId = randomUUID();
