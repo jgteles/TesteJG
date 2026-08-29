@@ -12,6 +12,7 @@ import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionSta
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
 import { WalletLedgerEntry } from '../../domain/wallet-ledger-entry';
 import { reversalLedgerType, validateReversalReference } from './reversal-reference.rules';
+import { enqueueWagerTransactionEvents } from './wager-transaction-outbox';
 
 export interface SubmitWagerTransactionInput {
   walletId: string;
@@ -255,6 +256,20 @@ export class SubmitWagerTransactionUseCase {
 
         em.persist(ledgerEntry);
       }
+
+      enqueueWagerTransactionEvents(
+        em,
+        entity,
+        ledgerType && balanceBefore && balanceAfter
+          ? {
+              direction: ledgerType,
+              amount: amount.toString(),
+              balanceBefore: balanceBefore.toString(),
+              balanceAfter: balanceAfter.toString(),
+              walletVersion: wallet.version,
+            }
+          : undefined,
+      );
 
       return this.toOutput(entity, false, wallet.balance);
     });

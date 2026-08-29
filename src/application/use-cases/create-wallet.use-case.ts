@@ -7,6 +7,7 @@ import { CurrencyMismatchError } from '../../domain/errors';
 import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.entity';
 import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionStatusEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
+import { enqueueWagerTransactionEvents } from './wager-transaction-outbox';
 
 export interface CreateWalletInput {
   playerId: string;
@@ -110,6 +111,13 @@ export class CreateWalletUseCase {
         });
 
         em.persist(ledgerEntry);
+        enqueueWagerTransactionEvents(em, openingTransaction, {
+          direction: WalletLedgerEntryType.CREDIT,
+          amount: initialBalance.toString(),
+          balanceBefore: '0.00',
+          balanceAfter: initialBalance.toString(),
+          walletVersion: wallet.version,
+        });
       }
     });
 

@@ -14,6 +14,7 @@ import {
   WagerTransactionStatusEntity,
 } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { reversalLedgerType, validateReversalReference } from './reversal-reference.rules';
+import { enqueueWagerTransactionEvents } from './wager-transaction-outbox';
 
 export interface ReprocessPendingReferenceOutput {
   id: string;
@@ -80,6 +81,7 @@ export class ReprocessPendingReferenceUseCase {
       if (failureCode) {
         transaction.markRejected(failureCode);
         this.updateEntity(entity, transaction, wallet.balance);
+        enqueueWagerTransactionEvents(em, entity);
         return this.toOutput(entity, true);
       }
 
@@ -92,6 +94,7 @@ export class ReprocessPendingReferenceUseCase {
         if (!(error instanceof InsufficientFundsError)) throw error;
         transaction.markRejected('REVERSAL_WOULD_CAUSE_NEGATIVE_BALANCE');
         this.updateEntity(entity, transaction, wallet.balance);
+        enqueueWagerTransactionEvents(em, entity);
         return this.toOutput(entity, true);
       }
 
@@ -120,6 +123,13 @@ export class ReprocessPendingReferenceUseCase {
         balanceAfter: ledger.balanceAfter.toString(),
         createdAt: ledger.createdAt,
       }));
+      enqueueWagerTransactionEvents(em, entity, {
+        direction: ledgerType,
+        amount: ledger.amount.toString(),
+        balanceBefore: ledger.balanceBefore.toString(),
+        balanceAfter: ledger.balanceAfter.toString(),
+        walletVersion: wallet.version,
+      });
 
       return this.toOutput(entity, true);
     });
