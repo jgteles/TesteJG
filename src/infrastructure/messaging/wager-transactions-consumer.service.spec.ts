@@ -16,6 +16,7 @@ import { CreateWalletUseCase } from '../../application/use-cases/create-wallet.u
 import { SubmitWagerTransactionUseCase } from '../../application/use-cases/submit-wager-transaction.use-case';
 import { InboxMessageEntity } from '../persistence/mikro-orm/inbox-message.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../persistence/mikro-orm/wallet-ledger-entry.entity';
+import { WalletEntity } from '../persistence/mikro-orm/wallet.entity';
 import { WagerTransactionEntity } from '../persistence/mikro-orm/wager-transaction.entity';
 import {
   WAGER_TRANSACTIONS_CONSUMER,
@@ -115,6 +116,57 @@ describe('WagerTransactionsConsumerService', () => {
     expect(await readEm.count(WalletLedgerEntryEntity, {
       transaction: { id: transaction.id },
     })).toBe(1);
+  });
+
+  it('deduplicates redelivery when the database commits but ACK fails', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const envelope = wagerMessage(wallet.id, playerId);
+    await sendEnvelope(envelope);
+    const [firstDelivery] = await receiveMessages(1);
+
+    await expect(consumer.processMessage(firstDelivery, `${queueUrl}-missing`)).rejects.toThrow();
+
+    let readEm = orm.em.fork();
+    const committedInbox = await readEm.findOneOrFail(InboxMessageEntity, {
+      consumerName: WAGER_TRANSACTIONS_CONSUMER,
+      messageId: envelope.messageId,
+    });
+    const committedTransaction = await readEm.findOneOrFail(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    });
+    expect(committedInbox.status).toBe('PROCESSED');
+    expect(await readEm.count(WalletLedgerEntryEntity, {
+      transaction: { id: committedTransaction.id },
+    })).toBe(1);
+    expect((await readEm.findOneOrFail(WalletEntity, { id: wallet.id })).balanceAmount).toBe('75.00');
+
+    await sqs.send(new ChangeMessageVisibilityCommand({
+      QueueUrl: queueUrl,
+      ReceiptHandle: firstDelivery.ReceiptHandle!,
+      VisibilityTimeout: 0,
+    }));
+    const [redelivered] = await receiveMessages(1);
+    expect(JSON.parse(redelivered.Body!).messageId).toBe(envelope.messageId);
+
+    await consumer.processMessage(redelivered, queueUrl);
+
+    readEm = orm.em.fork();
+    expect(await readEm.count(InboxMessageEntity, {
+      consumerName: WAGER_TRANSACTIONS_CONSUMER,
+      messageId: envelope.messageId,
+    })).toBe(1);
+    expect(await readEm.count(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    })).toBe(1);
+    expect(await readEm.count(WalletLedgerEntryEntity, {
+      transaction: { id: committedTransaction.id },
+    })).toBe(1);
+    expect((await readEm.findOneOrFail(WalletEntity, { id: wallet.id })).balanceAmount).toBe('75.00');
+    expect(await receiveMessages(1)).toHaveLength(0);
   });
 
   it('does not commit Inbox or ACK when financial processing fails', async () => {

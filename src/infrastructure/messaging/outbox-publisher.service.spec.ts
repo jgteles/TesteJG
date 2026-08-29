@@ -54,7 +54,7 @@ describe('OutboxPublisherService', () => {
     expect(JSON.parse(messages[0].Body!).eventId).toBe(messageId);
   });
 
-  it('keeps a message pending when SQS publication fails', async () => {
+  it('keeps a message pending when SQS publication fails and publishes it on a later attempt', async () => {
     const messageId = await insertPendingMessage(randomUUID());
     const publisher = new OutboxPublisherService(orm);
 
@@ -65,6 +65,17 @@ describe('OutboxPublisherService', () => {
     expect(stored.status).toBe('PENDING');
     expect(stored.publishedAt).toBeNull();
     expect(stored.attempts).toBe(1);
+
+    const retryResult = await publisher.publishPending(10, queueUrl);
+
+    expect(retryResult).toEqual({ selected: 1, published: 1, failed: 0 });
+    const recovered = await orm.em.fork().findOneOrFail(OutboxMessageEntity, { id: messageId });
+    expect(recovered.status).toBe('PUBLISHED');
+    expect(recovered.publishedAt).toBeInstanceOf(Date);
+    expect(recovered.attempts).toBe(2);
+    const messages = await receiveMessages();
+    expect(messages).toHaveLength(1);
+    expect(JSON.parse(messages[0].Body!).eventId).toBe(messageId);
   });
 
   it('does not let two publisher instances publish the same pending message', async () => {
