@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { LockMode, MikroORM } from '@mikro-orm/core';
+import type { EntityManager } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import { Money } from '../../domain/money';
 import { Wallet } from '../../domain/wallet';
@@ -53,6 +54,13 @@ export class SubmitWagerTransactionUseCase {
   constructor(private readonly orm: MikroORM) {}
 
   async execute(input: SubmitWagerTransactionInput): Promise<SubmitWagerTransactionOutput> {
+    return this.orm.em.transactional((em) => this.executeInTransaction(em, input));
+  }
+
+  async executeInTransaction(
+    em: EntityManager,
+    input: SubmitWagerTransactionInput,
+  ): Promise<SubmitWagerTransactionOutput> {
     const currency = (input.currency ?? 'BRL').trim().toUpperCase();
     const amount = Money.from({ amount: input.amount, currency });
     if (!amount.isPositive()) {
@@ -61,8 +69,7 @@ export class SubmitWagerTransactionUseCase {
     const idempotencyKey = input.idempotencyKey ?? `${input.providerId}:${input.externalTransactionId}`;
     const payloadHash = this.buildPayloadHash(input, amount);
 
-    return this.orm.em.transactional(async (em) => {
-      const sqlEm = em as unknown as PostgreSqlEntityManager;
+    const sqlEm = em as unknown as PostgreSqlEntityManager;
 
       // Claim the key before checking the transaction. A concurrent delivery
       // blocks on this row and resumes only after the first one commits.
@@ -271,8 +278,7 @@ export class SubmitWagerTransactionUseCase {
           : undefined,
       );
 
-      return this.toOutput(entity, false, wallet.balance);
-    });
+    return this.toOutput(entity, false, wallet.balance);
   }
 
   private buildPayloadHash(input: SubmitWagerTransactionInput, amount: Money): string {

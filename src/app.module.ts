@@ -11,6 +11,7 @@ import config from './mikro-orm.config';
 import { ApplicationExceptionFilter } from './application/filters/application-exception.filter';
 import { MigrationRunnerService } from './infrastructure/persistence/migration-runner.service';
 import { OutboxPublisherService } from './infrastructure/messaging/outbox-publisher.service';
+import { WagerTransactionsConsumerService } from './infrastructure/messaging/wager-transactions-consumer.service';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
@@ -21,6 +22,7 @@ import { OutboxPublisherService } from './infrastructure/messaging/outbox-publis
     ReprocessPendingReferenceUseCase,
     MigrationRunnerService,
     OutboxPublisherService,
+    WagerTransactionsConsumerService,
     { provide: APP_FILTER, useClass: ApplicationExceptionFilter },
   ],
 })
