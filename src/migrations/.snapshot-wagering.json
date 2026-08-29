@@ -735,6 +735,38 @@
           "comment": null,
           "enumItems": [],
           "mappedType": "string"
+        },
+        "reference_attempts": {
+          "name": "reference_attempts",
+          "type": "int4",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": 32,
+          "scale": 0,
+          "default": "0",
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
+        "next_reference_attempt_at": {
+          "name": "next_reference_attempt_at",
+          "type": "timestamptz(6)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "datetime"
         }
       },
       "indexes": [
@@ -758,6 +790,18 @@
           "keyName": "wager_transactions_idempotency_key_unique",
           "unique": true,
           "primary": false
+        },
+        {
+          "columnNames": [
+            "next_reference_attempt_at",
+            "id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "wager_transactions_pending_reference_retry",
+          "unique": false,
+          "primary": false,
+          "expression": "CREATE INDEX wager_transactions_pending_reference_retry ON public.wager_transactions USING btree (next_reference_attempt_at, id) WHERE ((status)::text = 'PENDING_REFERENCE'::text)"
         },
         {
           "columnNames": [
@@ -794,6 +838,12 @@
         }
       ],
       "checks": [
+        {
+          "name": "wager_transactions_reference_attempts_non_negative",
+          "columnName": "reference_attempts",
+          "definition": "CHECK ((reference_attempts >= 0))",
+          "expression": "reference_attempts >= 0"
+        },
         {
           "name": "wager_transactions_reference_required_check",
           "columnName": "reference_external_transaction_id",

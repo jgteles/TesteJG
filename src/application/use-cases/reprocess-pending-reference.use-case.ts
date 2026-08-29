@@ -29,7 +29,10 @@ export interface ReprocessPendingReferenceOutput {
 export class ReprocessPendingReferenceUseCase {
   constructor(private readonly orm: MikroORM) {}
 
-  async execute(transactionId: string): Promise<ReprocessPendingReferenceOutput> {
+  async execute(
+    transactionId: string,
+    rejectIfReferenceMissing = false,
+  ): Promise<ReprocessPendingReferenceOutput> {
     return this.orm.em.transactional(async (em) => {
       const entity = await em.findOne(
         WagerTransactionEntity,
@@ -46,7 +49,22 @@ export class ReprocessPendingReferenceUseCase {
         providerId: entity.providerId,
         externalTransactionId: entity.referenceExternalTransactionId!,
       });
-      if (!reference) return this.toOutput(entity, false);
+      if (!reference) {
+        if (!rejectIfReferenceMissing) return this.toOutput(entity, false);
+        const transaction = this.rehydrateTransaction(
+          entity,
+          Money.from({ amount: entity.amount, currency: entity.currency }),
+        );
+        transaction.markRejected('REFERENCE_NOT_FOUND');
+        this.updateEntity(
+          entity,
+          transaction,
+          Money.from({ amount: entity.balanceAfter, currency: entity.currency }),
+        );
+        entity.nextReferenceAttemptAt = undefined;
+        enqueueWagerTransactionEvents(em, entity);
+        return this.toOutput(entity, true);
+      }
 
       const walletEntity = await em.findOne(
         WalletEntity,
@@ -99,6 +117,7 @@ export class ReprocessPendingReferenceUseCase {
       }
 
       transaction.markProcessed(reference.id);
+      entity.nextReferenceAttemptAt = undefined;
       this.updateEntity(entity, transaction, wallet.balance);
       walletEntity.balanceAmount = wallet.balance.toString();
       walletEntity.version = wallet.version;

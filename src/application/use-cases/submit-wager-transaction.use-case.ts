@@ -255,6 +255,8 @@ export class SubmitWagerTransactionUseCase {
         status: this.toEntityStatus(tx.status),
         payloadHash: tx.payloadHash,
         failureCode: tx.failureCode,
+        referenceAttempts: 0,
+        nextReferenceAttemptAt: status === WagerTransactionStatus.PENDING_REFERENCE ? new Date() : null,
         balanceAfter: wallet.balance.toString(),
         createdAt: tx.createdAt,
         updatedAt: tx.updatedAt,

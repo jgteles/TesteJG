@@ -68,6 +68,12 @@ export class WagerTransactionEntity {
   @Property({ columnType: 'varchar(64)', nullable: true })
   failureCode?: string;
 
+  @Property({ default: 0 })
+  referenceAttempts!: number;
+
+  @Property({ columnType: 'timestamptz', nullable: true })
+  nextReferenceAttemptAt?: Date;
+
   @Property({ columnType: 'numeric(19,2)' })
   balanceAfter!: string;
 

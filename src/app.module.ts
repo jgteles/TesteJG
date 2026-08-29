@@ -14,6 +14,7 @@ import { MigrationRunnerService } from './infrastructure/persistence/migration-r
 import { OutboxPublisherService } from './infrastructure/messaging/outbox-publisher.service';
 import { WagerTransactionsConsumerService } from './infrastructure/messaging/wager-transactions-consumer.service';
 import { MetricsController, OperationalMetricsService } from './observability/operational-metrics.service';
+import { PendingReferenceWorkerService } from './infrastructure/messaging/pending-reference-worker.service';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
@@ -27,6 +28,7 @@ import { MetricsController, OperationalMetricsService } from './observability/op
     MigrationRunnerService,
     OutboxPublisherService,
     WagerTransactionsConsumerService,
+    PendingReferenceWorkerService,
     { provide: APP_FILTER, useClass: ApplicationExceptionFilter },
   ],
 })
