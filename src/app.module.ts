@@ -10,6 +10,7 @@ import { HealthController } from './health/health.controller';
 import config from './mikro-orm.config';
 import { ApplicationExceptionFilter } from './application/filters/application-exception.filter';
 import { MigrationRunnerService } from './infrastructure/persistence/migration-runner.service';
+import { OutboxPublisherService } from './infrastructure/messaging/outbox-publisher.service';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
@@ -19,6 +20,7 @@ import { MigrationRunnerService } from './infrastructure/persistence/migration-r
     SubmitWagerTransactionUseCase,
     ReprocessPendingReferenceUseCase,
     MigrationRunnerService,
+    OutboxPublisherService,
     { provide: APP_FILTER, useClass: ApplicationExceptionFilter },
   ],
 })

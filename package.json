@@ -15,6 +15,7 @@
     "migration:down": "mikro-orm migration:down"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1121.0",
     "@mikro-orm/core": "7.0.2",
     "@mikro-orm/decorators": "7.0.2",
     "@mikro-orm/migrations": "7.0.2",
