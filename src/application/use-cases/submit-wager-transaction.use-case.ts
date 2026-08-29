@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException, Optional } from '@nestjs/common';
 import { LockMode, MikroORM } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
@@ -14,6 +14,7 @@ import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastruc
 import { WalletLedgerEntry } from '../../domain/wallet-ledger-entry';
 import { reversalLedgerType, validateReversalReference } from './reversal-reference.rules';
 import { enqueueWagerTransactionEvents } from './wager-transaction-outbox';
+import { OperationalMetricsService } from '../../observability/operational-metrics.service';
 
 export interface SubmitWagerTransactionInput {
   walletId: string;
@@ -51,10 +52,32 @@ export interface SubmitWagerTransactionOutput {
 
 @Injectable()
 export class SubmitWagerTransactionUseCase {
-  constructor(private readonly orm: MikroORM) {}
+  private readonly logger = new Logger(SubmitWagerTransactionUseCase.name);
+
+  constructor(
+    private readonly orm: MikroORM,
+    @Optional() private readonly metrics?: OperationalMetricsService,
+  ) {}
 
   async execute(input: SubmitWagerTransactionInput): Promise<SubmitWagerTransactionOutput> {
-    return this.orm.em.transactional((em) => this.executeInTransaction(em, input));
+    const startedAt = Date.now();
+    try {
+      const result = await this.orm.em.transactional((em) => this.executeInTransaction(em, input));
+      this.metrics?.transaction(result.status, result.idempotentReplay, Date.now() - startedAt);
+      this.logger.log({
+        event: 'wager_transaction_completed',
+        correlationId: result.idempotencyKey,
+        transactionId: result.id,
+        walletId: result.walletId,
+        providerId: result.providerId,
+        status: result.status,
+        idempotentReplay: result.idempotentReplay,
+      });
+      return result;
+    } catch (error) {
+      if (this.isLockConflict(error)) this.metrics?.lockConflict();
+      throw error;
+    }
   }
 
   async executeInTransaction(
@@ -391,6 +414,11 @@ export class SubmitWagerTransactionUseCase {
       default:
         throw new BadRequestException(`Unsupported persisted status: ${String(status)}`);
     }
+  }
+
+  private isLockConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || !('code' in error)) return false;
+    return ['40P01', '40001', '55P03'].includes(String(error.code));
   }
 
 }

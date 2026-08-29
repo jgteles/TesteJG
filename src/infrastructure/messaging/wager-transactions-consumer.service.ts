@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { BeforeApplicationShutdown, Injectable, Logger, Optional } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import {
@@ -13,6 +13,7 @@ import {
   SubmitWagerTransactionUseCase,
 } from '../../application/use-cases/submit-wager-transaction.use-case';
 import { WagerTransactionKind } from '../../domain/wager-transaction';
+import { OperationalMetricsService } from '../../observability/operational-metrics.service';
 
 export const WAGER_TRANSACTIONS_CONSUMER = 'wager-transactions-consumer';
 
@@ -41,13 +42,17 @@ export interface ConsumeMessagesResult {
 }
 
 @Injectable()
-export class WagerTransactionsConsumerService {
+export class WagerTransactionsConsumerService implements BeforeApplicationShutdown {
+  private readonly logger = new Logger(WagerTransactionsConsumerService.name);
   private readonly sqs: SQSClient;
   private readonly queueUrl: string;
+  private acceptingMessages = true;
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     private readonly orm: MikroORM,
     private readonly submit: SubmitWagerTransactionUseCase,
+    @Optional() private readonly metrics?: OperationalMetricsService,
   ) {
     const endpoint = process.env.AWS_ENDPOINT_URL ?? 'http://localhost:4566';
     this.queueUrl = process.env.WAGER_TRANSACTIONS_QUEUE_URL
@@ -63,10 +68,12 @@ export class WagerTransactionsConsumerService {
   }
 
   async consumeOnce(maxMessages = 10, queueUrl = this.queueUrl): Promise<ConsumeMessagesResult> {
+    if (!this.acceptingMessages) return { received: 0, processed: 0, failed: 0 };
     const response = await this.sqs.send(new ReceiveMessageCommand({
       QueueUrl: queueUrl,
       MaxNumberOfMessages: maxMessages,
       WaitTimeSeconds: 1,
+      MessageSystemAttributeNames: ['ApproximateReceiveCount'],
     }));
     const messages = response.Messages ?? [];
     let processed = 0;
@@ -85,10 +92,29 @@ export class WagerTransactionsConsumerService {
   }
 
   async processMessage(message: Message, queueUrl = this.queueUrl): Promise<void> {
+    if (!this.acceptingMessages) throw new Error('Consumer is shutting down');
+    const processing = this.processMessageInternal(message, queueUrl);
+    this.inFlight.add(processing);
+    try {
+      await processing;
+    } finally {
+      this.inFlight.delete(processing);
+    }
+  }
+
+  async beforeApplicationShutdown(): Promise<void> {
+    this.acceptingMessages = false;
+    await Promise.allSettled(this.inFlight);
+    this.sqs.destroy();
+  }
+
+  private async processMessageInternal(message: Message, queueUrl: string): Promise<void> {
     if (!message.Body || !message.ReceiptHandle) throw new Error('SQS message is missing body or receipt handle');
     const envelope = this.parseMessage(message.Body);
-
-    await this.orm.em.transactional(async (em) => {
+    let duplicate = false;
+    let result: Awaited<ReturnType<SubmitWagerTransactionUseCase['executeInTransaction']>> | undefined;
+    try {
+      await this.orm.em.transactional(async (em) => {
       const sqlEm = em as unknown as PostgreSqlEntityManager;
       const now = new Date();
       const inserted = await sqlEm.execute(
@@ -107,21 +133,46 @@ export class WagerTransactionsConsumerService {
         [WAGER_TRANSACTIONS_CONSUMER, envelope.messageId],
       ) as Array<{ id: string; status: string }>;
 
-      if (inserted.length === 0 && inbox[0]?.status === 'PROCESSED') return;
+      if (inserted.length === 0 && inbox[0]?.status === 'PROCESSED') {
+        duplicate = true;
+        return;
+      }
 
-      await this.submit.executeInTransaction(em, this.toSubmitInput(envelope));
+      result = await this.submit.executeInTransaction(em, this.toSubmitInput(envelope));
       await sqlEm.execute(
         `update inbox_messages
          set status = 'PROCESSED', attempts = attempts + 1, updated_at = now()
          where id = ?`,
         [inbox[0].id],
       );
-    });
+      });
 
-    await this.sqs.send(new DeleteMessageCommand({
-      QueueUrl: queueUrl,
-      ReceiptHandle: message.ReceiptHandle,
-    }));
+      await this.sqs.send(new DeleteMessageCommand({
+        QueueUrl: queueUrl,
+        ReceiptHandle: message.ReceiptHandle,
+      }));
+      if (duplicate) this.metrics?.transaction('DUPLICATE', true, 0);
+      if (result) this.metrics?.transaction(result.status, result.idempotentReplay, 0);
+      this.logger.log({
+        event: duplicate ? 'wager_message_duplicate' : 'wager_message_processed',
+        correlationId: envelope.data.idempotencyKey,
+        messageId: envelope.messageId,
+        transactionId: result?.id,
+        walletId: envelope.data.walletId,
+        providerId: envelope.data.providerId,
+      });
+    } catch (error) {
+      this.metrics?.retry();
+      if (Number(message.Attributes?.ApproximateReceiveCount ?? '0') >= 3) this.metrics?.dlq();
+      this.logger.error({
+        event: 'wager_message_failed',
+        correlationId: envelope.data.idempotencyKey,
+        messageId: envelope.messageId,
+        walletId: envelope.data.walletId,
+        providerId: envelope.data.providerId,
+      });
+      throw error;
+    }
   }
 
   private parseMessage(body: string): WagerTransactionRequestedMessage {

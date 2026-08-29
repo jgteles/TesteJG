@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import { Money, MoneyProps } from '../../domain/money';
 import { LedgerBalanceMismatchError } from '../../domain/errors';
@@ -8,6 +8,7 @@ import {
   WalletLedgerEntryEntity,
   WalletLedgerEntryType,
 } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
+import { OperationalMetricsService } from '../../observability/operational-metrics.service';
 
 export interface ReconcileWalletOutput {
   walletId: string;
@@ -20,7 +21,12 @@ export interface ReconcileWalletOutput {
 
 @Injectable()
 export class ReconcileWalletUseCase {
-  constructor(private readonly orm: MikroORM) {}
+  private readonly logger = new Logger(ReconcileWalletUseCase.name);
+
+  constructor(
+    private readonly orm: MikroORM,
+    @Optional() private readonly metrics?: OperationalMetricsService,
+  ) {}
 
   async execute(walletId: string): Promise<ReconcileWalletOutput> {
     const em = this.orm.em.fork();
@@ -70,12 +76,18 @@ export class ReconcileWalletUseCase {
       }
     }
 
+    const consistent = storedBalance.equals(calculatedBalance);
+    if (!consistent) {
+      this.metrics?.reconciliationDivergence();
+      this.logger.warn({ event: 'wallet_reconciliation_divergence', walletId });
+    }
+
     return {
       walletId,
       storedBalance: storedBalance.toJSON(),
       calculatedBalance: calculatedBalance.toJSON(),
       difference: calculatedBalance.subtract(storedBalance).toJSON(),
-      consistent: storedBalance.equals(calculatedBalance),
+      consistent,
       checkedEntries: entries.length,
     };
   }

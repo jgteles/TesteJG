@@ -1,12 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgresql';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { OperationalMetricsService } from '../../observability/operational-metrics.service';
 
 interface PendingOutboxRow {
   id: string;
   aggregate_id: string;
   payload: Record<string, unknown>;
+  created_at: Date;
 }
 
 export interface PublishOutboxResult {
@@ -16,11 +18,15 @@ export interface PublishOutboxResult {
 }
 
 @Injectable()
-export class OutboxPublisherService {
+export class OutboxPublisherService implements OnModuleDestroy {
+  private readonly logger = new Logger(OutboxPublisherService.name);
   private readonly sqs: SQSClient;
   private readonly queueUrl: string;
 
-  constructor(private readonly orm: MikroORM) {
+  constructor(
+    private readonly orm: MikroORM,
+    @Optional() private readonly metrics?: OperationalMetricsService,
+  ) {
     const endpoint = process.env.AWS_ENDPOINT_URL ?? 'http://localhost:4566';
     this.queueUrl = process.env.WAGER_TRANSACTIONS_QUEUE_URL
       ?? `${endpoint}/000000000000/wager-transactions.fifo`;
@@ -38,7 +44,7 @@ export class OutboxPublisherService {
     return this.orm.em.transactional(async (em) => {
       const sqlEm = em as unknown as PostgreSqlEntityManager;
       const rows = await sqlEm.execute(
-        `select id, aggregate_id, payload
+        `select id, aggregate_id, payload, created_at
          from outbox_messages
          where status = 'PENDING'
            and published_at is null
@@ -48,6 +54,7 @@ export class OutboxPublisherService {
          limit ?`,
         [limit],
       ) as PendingOutboxRow[];
+      this.metrics?.outboxLag(rows.length === 0 ? 0 : Date.now() - rows[0].created_at.getTime());
       let published = 0;
       let failed = 0;
 
@@ -67,6 +74,14 @@ export class OutboxPublisherService {
             [row.id],
           );
           published += 1;
+          this.logger.log({
+            event: 'outbox_message_published',
+            correlationId: row.payload.correlationId,
+            messageId: row.id,
+            transactionId: row.aggregate_id,
+            walletId,
+            providerId: this.providerIdFrom(row),
+          });
         } catch {
           await sqlEm.execute(
             `update outbox_messages
@@ -75,6 +90,15 @@ export class OutboxPublisherService {
             [row.id],
           );
           failed += 1;
+          this.metrics?.retry();
+          this.logger.error({
+            event: 'outbox_message_failed',
+            correlationId: row.payload.correlationId,
+            messageId: row.id,
+            transactionId: row.aggregate_id,
+            walletId,
+            providerId: this.providerIdFrom(row),
+          });
         }
       }
 
@@ -89,5 +113,18 @@ export class OutboxPublisherService {
       if (typeof walletId === 'string' && walletId.length > 0) return walletId;
     }
     return row.aggregate_id;
+  }
+
+  private providerIdFrom(row: PendingOutboxRow): string | undefined {
+    const data = row.payload.data;
+    if (data && typeof data === 'object' && 'providerId' in data) {
+      const providerId = (data as { providerId?: unknown }).providerId;
+      if (typeof providerId === 'string') return providerId;
+    }
+    return undefined;
+  }
+
+  onModuleDestroy(): void {
+    this.sqs.destroy();
   }
 }

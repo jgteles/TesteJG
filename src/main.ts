@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks(['SIGTERM']);
   app.useGlobalPipes(new ValidationPipe({
     transform: true,
     whitelist: true,

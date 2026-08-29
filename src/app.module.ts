@@ -13,11 +13,13 @@ import { ApplicationExceptionFilter } from './application/filters/application-ex
 import { MigrationRunnerService } from './infrastructure/persistence/migration-runner.service';
 import { OutboxPublisherService } from './infrastructure/messaging/outbox-publisher.service';
 import { WagerTransactionsConsumerService } from './infrastructure/messaging/wager-transactions-consumer.service';
+import { MetricsController, OperationalMetricsService } from './observability/operational-metrics.service';
 
 @Module({
   imports: [MikroOrmModule.forRoot(config)],
-  controllers: [HealthController, WalletsController, WagerTransactionsController],
+  controllers: [HealthController, MetricsController, WalletsController, WagerTransactionsController],
   providers: [
+    OperationalMetricsService,
     CreateWalletUseCase,
     ReconcileWalletUseCase,
     SubmitWagerTransactionUseCase,
