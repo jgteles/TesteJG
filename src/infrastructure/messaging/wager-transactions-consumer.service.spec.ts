@@ -26,6 +26,7 @@ describe('WagerTransactionsConsumerService', () => {
   let orm: MikroORM;
   let sqs: SQSClient;
   let queueUrl: string;
+  let deadLetterQueueUrl: string;
   let createWallet: CreateWalletUseCase;
   let consumer: WagerTransactionsConsumerService;
 
@@ -41,11 +42,16 @@ describe('WagerTransactionsConsumerService', () => {
     });
     const queue = await sqs.send(new GetQueueUrlCommand({ QueueName: 'wager-transactions.fifo' }));
     queueUrl = queue.QueueUrl!;
+    const deadLetterQueue = await sqs.send(new GetQueueUrlCommand({
+      QueueName: 'wager-transactions-dlq.fifo',
+    }));
+    deadLetterQueueUrl = deadLetterQueue.QueueUrl!;
   });
 
   beforeEach(async () => {
     await orm.em.fork().nativeDelete(InboxMessageEntity, {});
     await drainQueue();
+    await drainQueue(deadLetterQueueUrl);
   });
 
   afterAll(async () => {
@@ -163,6 +169,35 @@ describe('WagerTransactionsConsumerService', () => {
     })).toBe(1);
   });
 
+  it('lets SQS retry a failed message and move it to the native DLQ after maxReceiveCount', async () => {
+    const envelope = wagerMessage(randomUUID(), randomUUID());
+    await sendEnvelope(envelope);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await consumer.consumeOnce(1, queueUrl);
+      expect(result).toEqual({ received: 1, processed: 0, failed: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+    }
+
+    await consumer.consumeOnce(1, queueUrl);
+    const deadLetters = await receiveMessages(1, deadLetterQueueUrl);
+
+    expect(deadLetters).toHaveLength(1);
+    expect(JSON.parse(deadLetters[0].Body!).messageId).toBe(envelope.messageId);
+    const readEm = orm.em.fork();
+    expect(await readEm.count(InboxMessageEntity, {
+      consumerName: WAGER_TRANSACTIONS_CONSUMER,
+      messageId: envelope.messageId,
+    })).toBe(0);
+    expect(await readEm.count(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    })).toBe(0);
+    await sqs.send(new DeleteMessageCommand({
+      QueueUrl: deadLetterQueueUrl,
+      ReceiptHandle: deadLetters[0].ReceiptHandle!,
+    }));
+  }, 15_000);
+
   function wagerMessage(walletId: string, playerId: string) {
     return {
       messageId: randomUUID(),
@@ -194,21 +229,21 @@ describe('WagerTransactionsConsumerService', () => {
     }));
   }
 
-  async function receiveMessages(maxNumberOfMessages: number) {
+  async function receiveMessages(maxNumberOfMessages: number, targetQueueUrl = queueUrl) {
     const response = await sqs.send(new ReceiveMessageCommand({
-      QueueUrl: queueUrl,
+      QueueUrl: targetQueueUrl,
       MaxNumberOfMessages: maxNumberOfMessages,
       WaitTimeSeconds: 1,
     }));
     return response.Messages ?? [];
   }
 
-  async function drainQueue(): Promise<void> {
+  async function drainQueue(targetQueueUrl = queueUrl): Promise<void> {
     for (;;) {
-      const messages = await receiveMessages(10);
+      const messages = await receiveMessages(10, targetQueueUrl);
       if (messages.length === 0) return;
       await sqs.send(new DeleteMessageBatchCommand({
-        QueueUrl: queueUrl,
+        QueueUrl: targetQueueUrl,
         Entries: messages.map((message, index) => ({
           Id: String(index),
           ReceiptHandle: message.ReceiptHandle!,

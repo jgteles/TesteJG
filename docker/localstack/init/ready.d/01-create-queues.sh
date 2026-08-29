@@ -11,15 +11,20 @@ awslocal() {
 
 awslocal sqs create-queue \
   --queue-name wager-transactions-dlq.fifo \
-  --attributes FifoQueue=true,ContentBasedDeduplication=false,VisibilityTimeout=30
+  --attributes FifoQueue=true,ContentBasedDeduplication=false
 
 dead_letter_url="$(awslocal sqs get-queue-url --queue-name wager-transactions-dlq.fifo --query QueueUrl --output text)"
 dead_letter_arn="arn:aws:sqs:${region}:${account_id}:wager-transactions-dlq.fifo"
-redrive_policy="{\"deadLetterTargetArn\":\"${dead_letter_arn}\",\"maxReceiveCount\":\"5\"}"
-queue_attributes="{\"FifoQueue\":\"true\",\"ContentBasedDeduplication\":\"false\",\"VisibilityTimeout\":\"30\",\"RedrivePolicy\":\"${redrive_policy//\"/\\\"}\"}"
+redrive_policy="{\"deadLetterTargetArn\":\"${dead_letter_arn}\",\"maxReceiveCount\":\"3\"}"
 
 awslocal sqs create-queue \
   --queue-name wager-transactions.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=false
+
+main_queue_url="$(awslocal sqs get-queue-url --queue-name wager-transactions.fifo --query QueueUrl --output text)"
+queue_attributes="{\"VisibilityTimeout\":\"1\",\"RedrivePolicy\":\"${redrive_policy//\"/\\\"}\"}"
+awslocal sqs set-queue-attributes \
+  --queue-url "$main_queue_url" \
   --attributes "$queue_attributes"
 
 printf 'Created SQS queues:\n'
