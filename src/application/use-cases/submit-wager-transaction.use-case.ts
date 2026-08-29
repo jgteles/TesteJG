@@ -11,6 +11,7 @@ import { WalletEntity } from '../../infrastructure/persistence/mikro-orm/wallet.
 import { WagerTransactionEntity, WagerTransactionKindEntity, WagerTransactionStatusEntity } from '../../infrastructure/persistence/mikro-orm/wager-transaction.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../../infrastructure/persistence/mikro-orm/wallet-ledger-entry.entity';
 import { WalletLedgerEntry } from '../../domain/wallet-ledger-entry';
+import { reversalLedgerType, validateReversalReference } from './reversal-reference.rules';
 
 export interface SubmitWagerTransactionInput {
   walletId: string;
@@ -153,21 +154,28 @@ export class SubmitWagerTransactionUseCase {
             status = WagerTransactionStatus.PENDING_REFERENCE;
             tx.markPendingReference();
           } else {
-            failureCode = await this.validateReference(em, tx, referenceEntity);
+            const reversalKind = this.toEntityKind(tx.kind) as
+              | WagerTransactionKindEntity.REFUND
+              | WagerTransactionKindEntity.ROLLBACK;
+            failureCode = await validateReversalReference(em, {
+              walletId: tx.walletId,
+              playerId: tx.playerId,
+              currency: tx.currency,
+              roundId: tx.roundId,
+              amount: tx.amount.toString(),
+              kind: reversalKind,
+            }, referenceEntity);
             if (failureCode) {
               status = WagerTransactionStatus.REJECTED;
               tx.markRejected(failureCode);
             } else {
               balanceBefore = wallet.balance;
-              const shouldCredit = input.kind === WagerTransactionKind.REFUND
-                || referenceEntity.kind === WagerTransactionKindEntity.BET;
-              if (shouldCredit) {
+              ledgerType = reversalLedgerType(reversalKind, referenceEntity.kind);
+              if (ledgerType === WalletLedgerEntryType.CREDIT) {
                 wallet.credit(amount);
-                ledgerType = WalletLedgerEntryType.CREDIT;
               } else {
                 try {
                   wallet.debit(amount);
-                  ledgerType = WalletLedgerEntryType.DEBIT;
                 } catch (error) {
                   if (!(error instanceof InsufficientFundsError)) throw error;
                   status = WagerTransactionStatus.REJECTED;
@@ -364,34 +372,4 @@ export class SubmitWagerTransactionUseCase {
     }
   }
 
-  private async validateReference(
-    em: import('@mikro-orm/core').EntityManager,
-    transaction: WagerTransaction,
-    reference: WagerTransactionEntity,
-  ): Promise<string | undefined> {
-    if (reference.status !== WagerTransactionStatusEntity.PROCESSED) return 'REFERENCE_NOT_PROCESSED';
-    if (
-      reference.wallet.id !== transaction.walletId
-      || reference.playerId !== transaction.playerId
-      || reference.currency !== transaction.currency
-      || reference.roundId !== transaction.roundId
-    ) return 'REFERENCE_CONTEXT_MISMATCH';
-    if (reference.amount !== transaction.amount.toString()) return 'REFERENCE_AMOUNT_MISMATCH';
-
-    const allowed = transaction.kind === WagerTransactionKind.REFUND
-      ? reference.kind === WagerTransactionKindEntity.BET
-      : [
-          WagerTransactionKindEntity.BET,
-          WagerTransactionKindEntity.WIN,
-          WagerTransactionKindEntity.REFUND,
-        ].includes(reference.kind);
-    if (!allowed) return 'REFERENCE_TYPE_MISMATCH';
-
-    const previous = await em.findOne(WagerTransactionEntity, {
-      referenceTransactionId: reference.id,
-      kind: this.toEntityKind(transaction.kind),
-      status: WagerTransactionStatusEntity.PROCESSED,
-    });
-    return previous ? 'REFERENCE_ALREADY_REVERSED' : undefined;
-  }
 }
