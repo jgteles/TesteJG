@@ -39,6 +39,7 @@ export class QueryWagerTransactionsUseCase {
       referenceTransactionId: transaction.referenceTransactionId,
       status: transaction.status,
       failureCode: transaction.failureCode,
+      processedAt: transaction.processedAt,
       balance: { amount: transaction.balanceAfter, currency: transaction.currency },
       createdAt: transaction.createdAt,
       updatedAt: transaction.updatedAt,

@@ -14,6 +14,7 @@ export enum WagerTransactionStatus {
   PENDING_REFERENCE = 'PENDING_REFERENCE',
   PROCESSED = 'PROCESSED',
   REJECTED = 'REJECTED',
+  FAILED = 'FAILED',
 }
 
 export interface WagerTransactionProps {
@@ -33,6 +34,7 @@ export interface WagerTransactionProps {
   referenceTransactionId?: string;
   status?: WagerTransactionStatus;
   failureCode?: string;
+  processedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -54,6 +56,7 @@ export interface WagerTransactionState {
   referenceTransactionId?: string;
   status: WagerTransactionStatus;
   failureCode?: string;
+  processedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -75,6 +78,7 @@ export class WagerTransaction {
   private _referenceTransactionId?: string;
   private _status: WagerTransactionStatus;
   private _failureCode?: string;
+  private _processedAt?: Date;
   private readonly _createdAt: Date;
   private _updatedAt: Date;
 
@@ -95,6 +99,7 @@ export class WagerTransaction {
     this._referenceTransactionId = props.referenceTransactionId;
     this._status = props.status ?? WagerTransactionStatus.PENDING;
     this._failureCode = props.failureCode;
+    this._processedAt = props.processedAt;
     this._createdAt = props.createdAt ?? new Date();
     this._updatedAt = props.updatedAt ?? this._createdAt;
   }
@@ -132,6 +137,7 @@ export class WagerTransaction {
       referenceTransactionId: state.referenceTransactionId,
       status: state.status,
       failureCode: state.failureCode,
+      processedAt: state.processedAt,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
     });
@@ -153,17 +159,19 @@ export class WagerTransaction {
   get referenceTransactionId(): string | undefined { return this._referenceTransactionId; }
   get status(): WagerTransactionStatus { return this._status; }
   get failureCode(): string | undefined { return this._failureCode; }
+  get processedAt(): Date | undefined { return this._processedAt; }
   get createdAt(): Date { return this._createdAt; }
   get updatedAt(): Date { return this._updatedAt; }
 
-  markProcessed(referenceTransactionId?: string): WagerTransaction {
+  markProcessed(referenceTransactionId?: string, at = new Date()): WagerTransaction {
     if (this._status !== WagerTransactionStatus.PENDING && this._status !== WagerTransactionStatus.PENDING_REFERENCE) {
       throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.PROCESSED);
     }
 
     this._status = WagerTransactionStatus.PROCESSED;
     this._referenceTransactionId = referenceTransactionId;
-    this._updatedAt = new Date();
+    this._processedAt = at;
+    this._updatedAt = at;
     return this;
   }
 
@@ -183,6 +191,17 @@ export class WagerTransaction {
     }
 
     this._status = WagerTransactionStatus.REJECTED;
+    this._failureCode = failureCode;
+    this._updatedAt = new Date();
+    return this;
+  }
+
+  markFailed(failureCode: string): WagerTransaction {
+    if (this._status !== WagerTransactionStatus.PENDING && this._status !== WagerTransactionStatus.PENDING_REFERENCE) {
+      throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.FAILED);
+    }
+
+    this._status = WagerTransactionStatus.FAILED;
     this._failureCode = failureCode;
     this._updatedAt = new Date();
     return this;

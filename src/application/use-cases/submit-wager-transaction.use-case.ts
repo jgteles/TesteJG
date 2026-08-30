@@ -46,6 +46,7 @@ export interface SubmitWagerTransactionOutput {
   idempotentReplay: boolean;
   failureCode?: string;
   referenceTransactionId?: string;
+  processedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -255,6 +256,7 @@ export class SubmitWagerTransactionUseCase {
         status: this.toEntityStatus(tx.status),
         payloadHash: tx.payloadHash,
         failureCode: tx.failureCode,
+        processedAt: tx.processedAt,
         referenceAttempts: 0,
         nextReferenceAttemptAt: status === WagerTransactionStatus.PENDING_REFERENCE ? new Date() : null,
         balanceAfter: wallet.balance.toString(),
@@ -350,6 +352,8 @@ export class SubmitWagerTransactionUseCase {
         return WagerTransactionStatusEntity.PROCESSED;
       case WagerTransactionStatus.REJECTED:
         return WagerTransactionStatusEntity.REJECTED;
+      case WagerTransactionStatus.FAILED:
+        return WagerTransactionStatusEntity.FAILED;
       default:
         throw new BadRequestException(`Unsupported wager status: ${String(status)}`);
     }
@@ -381,6 +385,7 @@ export class SubmitWagerTransactionUseCase {
       idempotentReplay,
       failureCode: entity.failureCode,
       referenceTransactionId: entity.referenceTransactionId,
+      processedAt: entity.processedAt,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     };
@@ -413,6 +418,8 @@ export class SubmitWagerTransactionUseCase {
         return WagerTransactionStatus.PROCESSED;
       case WagerTransactionStatusEntity.REJECTED:
         return WagerTransactionStatus.REJECTED;
+      case WagerTransactionStatusEntity.FAILED:
+        return WagerTransactionStatus.FAILED;
       default:
         throw new BadRequestException(`Unsupported persisted status: ${String(status)}`);
     }

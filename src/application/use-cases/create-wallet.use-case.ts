@@ -79,6 +79,7 @@ export class CreateWalletUseCase {
           .update(JSON.stringify(openingPayload, Object.keys(openingPayload).sort()))
           .digest('hex');
 
+        const processedAt = new Date();
         const openingTransaction = em.create(WagerTransactionEntity, {
           id: randomUUID(),
           wallet: walletEntity,
@@ -91,12 +92,13 @@ export class CreateWalletUseCase {
           currency: wallet.currency,
           referenceExternalTransactionId: null,
           status: WagerTransactionStatusEntity.PROCESSED,
+          processedAt,
           referenceAttempts: 0,
           nextReferenceAttemptAt: null,
           payloadHash: openingHash,
           balanceAfter: initialBalance.toString(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: processedAt,
+          updatedAt: processedAt,
         });
 
         em.persist(openingTransaction);

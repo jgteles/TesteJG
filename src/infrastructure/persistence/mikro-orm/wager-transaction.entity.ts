@@ -16,6 +16,7 @@ export enum WagerTransactionStatusEntity {
   PENDING_REFERENCE = 'PENDING_REFERENCE',
   PROCESSED = 'PROCESSED',
   REJECTED = 'REJECTED',
+  FAILED = 'FAILED',
 }
 
 @Entity({ tableName: 'wager_transactions' })
@@ -67,6 +68,9 @@ export class WagerTransactionEntity {
 
   @Property({ columnType: 'varchar(64)', nullable: true })
   failureCode?: string;
+
+  @Property({ columnType: 'timestamptz', nullable: true })
+  processedAt?: Date;
 
   @Property({ default: 0 })
   referenceAttempts!: number;

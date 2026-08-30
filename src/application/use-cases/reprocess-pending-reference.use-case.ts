@@ -174,6 +174,7 @@ export class ReprocessPendingReferenceUseCase {
       referenceTransactionId: entity.referenceTransactionId,
       status: WagerTransactionStatus.PENDING_REFERENCE,
       failureCode: entity.failureCode,
+      processedAt: entity.processedAt,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     });
@@ -185,6 +186,7 @@ export class ReprocessPendingReferenceUseCase {
       : WagerTransactionStatusEntity.REJECTED;
     entity.referenceTransactionId = transaction.referenceTransactionId;
     entity.failureCode = transaction.failureCode;
+    entity.processedAt = transaction.processedAt;
     entity.balanceAfter = balance.toString();
     entity.updatedAt = transaction.updatedAt;
   }
@@ -210,6 +212,8 @@ export class ReprocessPendingReferenceUseCase {
         return WagerTransactionStatus.PROCESSED;
       case WagerTransactionStatusEntity.REJECTED:
         return WagerTransactionStatus.REJECTED;
+      case WagerTransactionStatusEntity.FAILED:
+        return WagerTransactionStatus.FAILED;
     }
   }
 }
