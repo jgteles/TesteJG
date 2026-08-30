@@ -1,8 +1,27 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Post, UnprocessableEntityException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpStatus,
+  Param,
+  Post,
+  Res,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { SubmitWagerTransactionUseCase } from '../use-cases/submit-wager-transaction.use-case';
 import { WagerTransactionStatus } from '../../domain/wager-transaction';
 import { SubmitWagerTransactionDto } from '../dtos/submit-wager-transaction.dto';
 import { QueryWagerTransactionsUseCase } from '../use-cases/query-wager-transactions.use-case';
+
+interface SubmitWagerTransactionHttpResponse {
+  transactionId: string;
+  status: WagerTransactionStatus;
+  balance: { amount: string; currency: string };
+  idempotentReplay: boolean;
+  failureCode?: string;
+}
 
 @Controller('wagering')
 export class WagerTransactionsController {
@@ -17,7 +36,11 @@ export class WagerTransactionsController {
   }
 
   @Post('transactions')
-  async create(@Headers('idempotency-key') idempotencyKey: string | undefined, @Body() body: SubmitWagerTransactionDto) {
+  async create(
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() body: SubmitWagerTransactionDto,
+    @Res({ passthrough: true }) httpResponse: { status(code: number): unknown },
+  ): Promise<SubmitWagerTransactionHttpResponse> {
     if (!idempotencyKey?.trim()) {
       throw new BadRequestException('Idempotency-Key header is required');
     }
@@ -36,10 +59,26 @@ export class WagerTransactionsController {
       referenceExternalTransactionId: body.referenceExternalTransactionId,
     });
 
-    if (result.status === WagerTransactionStatus.REJECTED) {
-      throw new UnprocessableEntityException(result);
+    const response = this.toHttpResponse(result);
+
+    if (response.status === WagerTransactionStatus.REJECTED) {
+      throw new UnprocessableEntityException(response);
     }
 
-    return result;
+    if (response.status === WagerTransactionStatus.PENDING_REFERENCE) {
+      httpResponse.status(HttpStatus.ACCEPTED);
+    }
+
+    return response;
+  }
+
+  private toHttpResponse(result: Awaited<ReturnType<SubmitWagerTransactionUseCase['execute']>>): SubmitWagerTransactionHttpResponse {
+    return {
+      transactionId: result.id,
+      status: result.status,
+      balance: result.balance,
+      idempotentReplay: result.idempotentReplay,
+      ...(result.failureCode ? { failureCode: result.failureCode } : {}),
+    };
   }
 }
