@@ -11,6 +11,8 @@ import type { EntityManager as PostgreSqlEntityManager } from '@mikro-orm/postgr
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { OperationalMetricsService } from '../../observability/operational-metrics.service';
 
+export const OUTBOX_RETRY_BACKOFF_BASE_MS = 1_000;
+
 interface PendingOutboxRow {
   id: string;
   aggregate_id: string;
@@ -63,7 +65,7 @@ export class OutboxPublisherService implements OnApplicationBootstrap, BeforeApp
          from outbox_messages
          where status = 'PENDING'
            and published_at is null
-           and next_attempt_at <= now()
+           and (next_attempt_at is null or next_attempt_at <= now())
          order by created_at, id
          for update skip locked
          limit ?`,
@@ -100,9 +102,13 @@ export class OutboxPublisherService implements OnApplicationBootstrap, BeforeApp
         } catch {
           await sqlEm.execute(
             `update outbox_messages
-             set updated_at = now(), attempts = attempts + 1
+             set updated_at = now(),
+                 attempts = attempts + 1,
+                 next_attempt_at = now() + (
+                   interval '1 millisecond' * (? * power(2, attempts))
+                 )
              where id = ?`,
-            [row.id],
+            [OUTBOX_RETRY_BACKOFF_BASE_MS, row.id],
           );
           failed += 1;
           this.metrics?.retry();

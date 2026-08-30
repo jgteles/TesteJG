@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import config from '../../mikro-orm.config';
 import { OutboxMessageEntity } from '../persistence/mikro-orm/outbox-message.entity';
-import { OutboxPublisherService } from './outbox-publisher.service';
+import { OUTBOX_RETRY_BACKOFF_BASE_MS, OutboxPublisherService } from './outbox-publisher.service';
 
 describe('OutboxPublisherService', () => {
   let orm: MikroORM;
@@ -76,9 +76,10 @@ describe('OutboxPublisherService', () => {
     await deleteMessages(events, eventsQueueUrl);
   });
 
-  it('keeps a message pending when SQS publication fails and publishes it on a later attempt', async () => {
+  it('persists exponential backoff and only retries a failed message when it is due', async () => {
     const messageId = await insertPendingMessage(randomUUID());
     const publisher = new OutboxPublisherService(orm);
+    const firstAttemptStartedAt = Date.now();
 
     const result = await publisher.publishPending(10, `${queueUrl}-missing`);
 
@@ -87,14 +88,37 @@ describe('OutboxPublisherService', () => {
     expect(stored.status).toBe('PENDING');
     expect(stored.publishedAt).toBeNull();
     expect(stored.attempts).toBe(1);
+    expect(stored.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
+      firstAttemptStartedAt + OUTBOX_RETRY_BACKOFF_BASE_MS,
+    );
 
-    const retryResult = await publisher.publishPending(10, queueUrl);
+    const restartedPublisher = new OutboxPublisherService(orm);
+    expect(await restartedPublisher.publishPending(10, queueUrl))
+      .toEqual({ selected: 0, published: 0, failed: 0 });
+
+    await makeDue(messageId);
+    const secondAttemptStartedAt = Date.now();
+    expect(await restartedPublisher.publishPending(10, `${queueUrl}-missing`))
+      .toEqual({ selected: 1, published: 0, failed: 1 });
+
+    const failedTwice = await orm.em.fork().findOneOrFail(OutboxMessageEntity, { id: messageId });
+    expect(failedTwice.status).toBe('PENDING');
+    expect(failedTwice.attempts).toBe(2);
+    expect(failedTwice.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
+      secondAttemptStartedAt + (OUTBOX_RETRY_BACKOFF_BASE_MS * 2),
+    );
+
+    expect(await restartedPublisher.publishPending(10, queueUrl))
+      .toEqual({ selected: 0, published: 0, failed: 0 });
+
+    await makeDue(messageId);
+    const retryResult = await restartedPublisher.publishPending(10, queueUrl);
 
     expect(retryResult).toEqual({ selected: 1, published: 1, failed: 0 });
     const recovered = await orm.em.fork().findOneOrFail(OutboxMessageEntity, { id: messageId });
     expect(recovered.status).toBe('PUBLISHED');
     expect(recovered.publishedAt).toBeInstanceOf(Date);
-    expect(recovered.attempts).toBe(2);
+    expect(recovered.attempts).toBe(3);
     const messages = await receiveMessages();
     expect(messages).toHaveLength(1);
     expect(JSON.parse(messages[0].Body!).eventId).toBe(messageId);
@@ -168,6 +192,15 @@ describe('OutboxPublisherService', () => {
     }));
     await em.flush();
     return id;
+  }
+
+  async function makeDue(messageId: string): Promise<void> {
+    await orm.em.getConnection().execute(
+      `update outbox_messages
+       set next_attempt_at = now() - interval '1 millisecond'
+       where id = ?`,
+      [messageId],
+    );
   }
 
   async function receiveMessages(maxNumberOfMessages = 10, targetQueueUrl = queueUrl) {
