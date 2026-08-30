@@ -308,6 +308,11 @@ export class SubmitWagerTransactionUseCase {
     return this.toOutput(entity, false, wallet.balance);
   }
 
+  payloadHashFor(input: SubmitWagerTransactionInput): string {
+    const currency = (input.currency ?? 'BRL').trim().toUpperCase();
+    return this.buildPayloadHash(input, Money.from({ amount: input.amount, currency }));
+  }
+
   private buildPayloadHash(input: SubmitWagerTransactionInput, amount: Money): string {
     const payload = {
       walletId: input.walletId,

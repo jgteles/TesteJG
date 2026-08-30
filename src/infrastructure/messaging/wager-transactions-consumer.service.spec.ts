@@ -5,10 +5,12 @@ import {
   ChangeMessageVisibilityCommand,
   DeleteMessageBatchCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   SQSClient,
+  SetQueueAttributesCommand,
 } from '@aws-sdk/client-sqs';
 import config from '../../mikro-orm.config';
 import { WagerTransactionKind } from '../../domain/wager-transaction';
@@ -17,8 +19,9 @@ import { SubmitWagerTransactionUseCase } from '../../application/use-cases/submi
 import { InboxMessageEntity } from '../persistence/mikro-orm/inbox-message.entity';
 import { WalletLedgerEntryEntity, WalletLedgerEntryType } from '../persistence/mikro-orm/wallet-ledger-entry.entity';
 import { WalletEntity } from '../persistence/mikro-orm/wallet.entity';
-import { WagerTransactionEntity } from '../persistence/mikro-orm/wager-transaction.entity';
+import { WagerTransactionEntity, WagerTransactionStatusEntity } from '../persistence/mikro-orm/wager-transaction.entity';
 import {
+  PERMANENT_INFRASTRUCTURE_FAILURE_CODE,
   WAGER_TRANSACTIONS_CONSUMER,
   WagerTransactionsConsumerService,
 } from './wager-transactions-consumer.service';
@@ -47,6 +50,20 @@ describe('WagerTransactionsConsumerService', () => {
       QueueName: 'wager-transactions-dlq.fifo',
     }));
     deadLetterQueueUrl = deadLetterQueue.QueueUrl!;
+    const deadLetterAttributes = await sqs.send(new GetQueueAttributesCommand({
+      QueueUrl: deadLetterQueueUrl,
+      AttributeNames: ['QueueArn'],
+    }));
+    await sqs.send(new SetQueueAttributesCommand({
+      QueueUrl: queueUrl,
+      Attributes: {
+        VisibilityTimeout: '1',
+        RedrivePolicy: JSON.stringify({
+          deadLetterTargetArn: deadLetterAttributes.Attributes!.QueueArn,
+          maxReceiveCount: '3',
+        }),
+      },
+    }));
   });
 
   beforeEach(async () => {
@@ -118,6 +135,31 @@ describe('WagerTransactionsConsumerService', () => {
     })).toBe(1);
   });
 
+  it('ACKs a persisted business rejection without duplicating financial effects', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({
+      playerId,
+      initialBalance: { amount: '10.00', currency: 'BRL' },
+    });
+    const envelope = wagerMessage(wallet.id, playerId);
+    const groupId = randomUUID();
+    await sendEnvelope(envelope, groupId);
+    await sendEnvelope(envelope, groupId);
+
+    expect(await consumer.consumeOnce(1, queueUrl)).toMatchObject({ processed: 1, failed: 0 });
+    expect(await consumer.consumeOnce(1, queueUrl)).toMatchObject({ processed: 1, failed: 0 });
+
+    const readEm = orm.em.fork();
+    const transaction = await readEm.findOneOrFail(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    });
+    expect(transaction.status).toBe(WagerTransactionStatusEntity.REJECTED);
+    expect(transaction.failureCode).toBe('INSUFFICIENT_FUNDS');
+    expect(await readEm.count(WalletLedgerEntryEntity, { transaction: { id: transaction.id } })).toBe(0);
+    expect((await readEm.findOneOrFail(WalletEntity, { id: wallet.id })).balanceAmount).toBe('10.00');
+    expect(await receiveMessages(1)).toHaveLength(0);
+  });
+
   it('deduplicates redelivery when the database commits but ACK fails', async () => {
     const playerId = randomUUID();
     const wallet = await createWallet.execute({
@@ -169,20 +211,51 @@ describe('WagerTransactionsConsumerService', () => {
     expect(await receiveMessages(1)).toHaveLength(0);
   });
 
-  it('does not commit Inbox or ACK when financial processing fails', async () => {
+  it('sends a permanently invalid resource message to DLQ without creating FAILED', async () => {
     const envelope = wagerMessage(randomUUID(), randomUUID());
     await sendEnvelope(envelope);
-    const [message] = await receiveMessages(1);
+    expect(await consumer.consumeOnce(1, queueUrl)).toEqual({ received: 1, processed: 1, failed: 0 });
 
-    await expect(consumer.processMessage(message, queueUrl)).rejects.toThrow('not found');
+    const readEm = orm.em.fork();
+    expect(await readEm.count(InboxMessageEntity, {
+      consumerName: WAGER_TRANSACTIONS_CONSUMER,
+      messageId: envelope.messageId,
+    })).toBe(1);
+    expect(await readEm.count(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    })).toBe(0);
+    expect(await receiveMessages(1)).toHaveLength(0);
+    const deadLetters = await receiveMessages(1, deadLetterQueueUrl);
+    expect(deadLetters).toHaveLength(1);
+    await sqs.send(new DeleteMessageCommand({
+      QueueUrl: deadLetterQueueUrl,
+      ReceiptHandle: deadLetters[0].ReceiptHandle!,
+    }));
+  });
 
+  it('does not ACK a transient infrastructure error and accepts redelivery', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({ playerId });
+    const envelope = wagerMessage(wallet.id, playerId);
+    const transientSubmit = new SubmitWagerTransactionUseCase(orm);
+    transientSubmit.executeInTransaction = async () => {
+      throw Object.assign(new Error('PostgreSQL temporarily unavailable'), { code: '57P03' });
+    };
+    const transientConsumer = new WagerTransactionsConsumerService(orm, transientSubmit);
+    await sendEnvelope(envelope);
+    const [firstDelivery] = await receiveMessages(1);
+
+    await expect(transientConsumer.processMessage(firstDelivery, queueUrl)).rejects.toThrow(
+      'temporarily unavailable',
+    );
     expect(await orm.em.fork().count(InboxMessageEntity, {
       consumerName: WAGER_TRANSACTIONS_CONSUMER,
       messageId: envelope.messageId,
     })).toBe(0);
+
     await sqs.send(new ChangeMessageVisibilityCommand({
       QueueUrl: queueUrl,
-      ReceiptHandle: message.ReceiptHandle!,
+      ReceiptHandle: firstDelivery.ReceiptHandle!,
       VisibilityTimeout: 0,
     }));
     const redelivered = await receiveMessages(1);
@@ -191,6 +264,60 @@ describe('WagerTransactionsConsumerService', () => {
     await sqs.send(new DeleteMessageCommand({
       QueueUrl: queueUrl,
       ReceiptHandle: redelivered[0].ReceiptHandle!,
+    }));
+  });
+
+  it('persists FAILED and sends a valid message to DLQ for permanent infrastructure failure', async () => {
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({ playerId });
+    const envelope = wagerMessage(wallet.id, playerId);
+    const permanentSubmit = new SubmitWagerTransactionUseCase(orm);
+    permanentSubmit.executeInTransaction = async () => {
+      throw Object.assign(new Error('Required database relation is unavailable'), { code: '42P01' });
+    };
+    const permanentConsumer = new WagerTransactionsConsumerService(orm, permanentSubmit);
+    await sendEnvelope(envelope);
+
+    expect(await permanentConsumer.consumeOnce(1, queueUrl))
+      .toEqual({ received: 1, processed: 1, failed: 0 });
+
+    const readEm = orm.em.fork();
+    const transaction = await readEm.findOneOrFail(WagerTransactionEntity, {
+      idempotencyKey: envelope.data.idempotencyKey,
+    });
+    expect(transaction.status).toBe(WagerTransactionStatusEntity.FAILED);
+    expect(transaction.failureCode).toBe(PERMANENT_INFRASTRUCTURE_FAILURE_CODE);
+    expect(await readEm.count(WalletLedgerEntryEntity, { transaction: { id: transaction.id } })).toBe(0);
+    expect(await readEm.count(InboxMessageEntity, {
+      consumerName: WAGER_TRANSACTIONS_CONSUMER,
+      messageId: envelope.messageId,
+      status: 'PROCESSED',
+    })).toBe(1);
+    expect(await receiveMessages(1)).toHaveLength(0);
+    const deadLetters = await receiveMessages(1, deadLetterQueueUrl);
+    expect(deadLetters).toHaveLength(1);
+    await sqs.send(new DeleteMessageCommand({
+      QueueUrl: deadLetterQueueUrl,
+      ReceiptHandle: deadLetters[0].ReceiptHandle!,
+    }));
+  });
+
+  it('sends malformed JSON deterministically to DLQ without Inbox or FAILED transaction', async () => {
+    await sqs.send(new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: '{invalid-json',
+      MessageGroupId: randomUUID(),
+      MessageDeduplicationId: randomUUID(),
+    }));
+
+    expect(await consumer.consumeOnce(1, queueUrl)).toEqual({ received: 1, processed: 1, failed: 0 });
+    expect(await orm.em.fork().count(InboxMessageEntity, {})).toBe(0);
+    const deadLetters = await receiveMessages(1, deadLetterQueueUrl);
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].Body).toBe('{invalid-json');
+    await sqs.send(new DeleteMessageCommand({
+      QueueUrl: deadLetterQueueUrl,
+      ReceiptHandle: deadLetters[0].ReceiptHandle!,
     }));
   });
 
@@ -222,17 +349,31 @@ describe('WagerTransactionsConsumerService', () => {
   });
 
   it('lets SQS retry a failed message and move it to the native DLQ after maxReceiveCount', async () => {
-    const envelope = wagerMessage(randomUUID(), randomUUID());
+    const playerId = randomUUID();
+    const wallet = await createWallet.execute({ playerId });
+    const envelope = wagerMessage(wallet.id, playerId);
+    const transientSubmit = new SubmitWagerTransactionUseCase(orm);
+    transientSubmit.executeInTransaction = async () => {
+      throw Object.assign(new Error('Temporary connection failure'), { code: '08006' });
+    };
+    const transientConsumer = new WagerTransactionsConsumerService(orm, transientSubmit);
     await sendEnvelope(envelope);
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await consumer.consumeOnce(1, queueUrl);
-      expect(result).toEqual({ received: 1, processed: 0, failed: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const [delivery] = await receiveEventually(queueUrl);
+      expect(delivery).toBeDefined();
+      await expect(transientConsumer.processMessage(delivery, queueUrl)).rejects.toThrow(
+        'Temporary connection failure',
+      );
+      await sqs.send(new ChangeMessageVisibilityCommand({
+        QueueUrl: queueUrl,
+        ReceiptHandle: delivery.ReceiptHandle!,
+        VisibilityTimeout: 0,
+      }));
     }
 
-    await consumer.consumeOnce(1, queueUrl);
-    const deadLetters = await receiveMessages(1, deadLetterQueueUrl);
+    await receiveMessages(1, queueUrl);
+    const deadLetters = await receiveEventually(deadLetterQueueUrl);
 
     expect(deadLetters).toHaveLength(1);
     expect(JSON.parse(deadLetters[0].Body!).messageId).toBe(envelope.messageId);
@@ -288,6 +429,15 @@ describe('WagerTransactionsConsumerService', () => {
       WaitTimeSeconds: 1,
     }));
     return response.Messages ?? [];
+  }
+
+  async function receiveEventually(targetQueueUrl: string) {
+    for (let poll = 0; poll < 5; poll += 1) {
+      const messages = await receiveMessages(1, targetQueueUrl);
+      if (messages.length > 0) return messages;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return [];
   }
 
   async function drainQueue(targetQueueUrl = queueUrl): Promise<void> {
