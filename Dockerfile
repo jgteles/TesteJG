@@ -1,9 +1,9 @@
-FROM oven/bun:1-alpine
+FROM oven/bun:1.4.0-alpine
 
 WORKDIR /app
 
-COPY package.json ./
-RUN bun install
+COPY package.json bun.lockb ./
+RUN bun install --frozen-lockfile
 
 COPY . .
 
