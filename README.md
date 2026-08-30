@@ -1,5 +1,131 @@
 # Technical Challenge — Distributed Wagering Processor
 
+## Implementação entregue — Quick Start
+
+Esta seção descreve a implementação presente neste repositório. O enunciado original do desafio permanece preservado abaixo. As decisões internas e os trade-offs estão em [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+### Pré-requisitos
+
+- Docker com Docker Compose;
+- Bun 1.4.0 para executar build, migrations ou testes fora dos containers.
+
+O ambiente local contém a aplicação NestJS, PostgreSQL 16 e LocalStack 3.8.1 com SQS. Para construir e subir os serviços:
+
+```bash
+docker compose up --build -d
+```
+
+A aplicação não fixa uma porta no host, permitindo múltiplas réplicas. Consulte a porta atribuída com:
+
+```bash
+docker compose port app 3000
+```
+
+Para executar três instâncias da aplicação sobre o mesmo PostgreSQL e LocalStack:
+
+```bash
+docker compose up --build --scale app=3 -d
+```
+
+Não há load balancer no Compose; o comando de escala existe para validar processamento distribuído e coordenação pelo banco/SQS.
+
+### Migrations
+
+As migrations versionadas em `src/migrations` são a fonte de criação e evolução do schema. Elas exigem PostgreSQL disponível e são executadas automaticamente no bootstrap da aplicação. Para executá-las explicitamente:
+
+```bash
+bun run migration:up
+```
+
+Ou usando o serviço do Compose:
+
+```bash
+docker compose run --rm app bun run migration:up
+```
+
+Rollback da migration mais recente:
+
+```bash
+bun run migration:down
+```
+
+### Comandos principais
+
+```bash
+bun install --frozen-lockfile  # dependências reproduzíveis
+bun run start:dev              # desenvolvimento
+bun run build                  # compila TypeScript/NestJS
+bun run start                  # executa dist/main.js com Bun
+bun test                       # suíte completa
+```
+
+Para testes de integração fora do Compose completo, suba primeiro as dependências:
+
+```bash
+docker compose up -d postgres localstack
+bun test
+```
+
+### Health e métricas
+
+Depois de descobrir a porta publicada pelo Compose:
+
+```http
+GET /health/live
+GET /health/ready
+GET /metrics
+```
+
+- `live` confirma que o processo Nest está respondendo;
+- `ready` executa `SELECT 1` no PostgreSQL e consulta atributos da fila `wager-transactions.fifo` no SQS;
+- `metrics` retorna o snapshot em memória das métricas operacionais da instância atual.
+
+### API implementada
+
+| Método | Path | Finalidade |
+|---|---|---|
+| `POST` | `/wallets` | abre uma wallet e registra `OPENING` quando o saldo inicial é positivo |
+| `GET` | `/wallets/:walletId` | consulta saldo e versão |
+| `GET` | `/wallets/:walletId/ledger?cursor=...&limit=50` | consulta o ledger paginado |
+| `POST` | `/wallets/:walletId/reconciliation` | compara saldo armazenado e ledger |
+| `POST` | `/wagering/transactions` | submete uma operação de wagering |
+| `GET` | `/wagering/transactions/:transactionId` | consulta por id interno |
+| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | consulta pelo identificador do provedor |
+
+`POST /wagering/transactions` exige o header `Idempotency-Key`. Exemplo:
+
+```http
+POST /wagering/transactions
+Content-Type: application/json
+Idempotency-Key: provider-a:bet-123
+```
+
+```json
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "bet-123",
+  "playerId": "player-123",
+  "walletId": "wallet-123",
+  "roundId": "round-123",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": { "amount": "80.00", "currency": "BRL" }
+}
+```
+
+Dinheiro sempre entra e sai como string decimal. A resposta pública usa `transactionId`, `status`, `balance`, `idempotentReplay` e, quando aplicável, `failureCode`.
+
+### Variáveis de ambiente
+
+O arquivo `.env.example` contém os valores locais de PostgreSQL, região AWS e porta do LocalStack. A aplicação também reconhece `PORT`, `POSTGRES_HOST`, `AWS_ENDPOINT_URL`, `WAGER_TRANSACTIONS_QUEUE_URL`, `WAGER_TRANSACTIONS_DLQ_URL` e `WAGER_EVENTS_QUEUE_URL`; quando as URLs das filas não são informadas, elas são derivadas de `AWS_ENDPOINT_URL`.
+
+### Limitações conhecidas no estado atual
+
+- `bun run build` está bloqueado por `TS7006` em `query-wallets.use-case.ts` (`entry` com tipo implícito `any`); por consequência, a imagem Docker final não conclui o estágio de build.
+- O teste `mandatory GET queries` falha porque seu fixture viola `wager_transactions_round_game_check` ao criar uma BET sem rodada/jogo.
+- Com métricas injetadas, o loop automático da Outbox pode receber `created_at` como string do driver e tentar chamar `getTime()`. Os testes diretos do publisher passam porque o serviço é instanciado sem métricas nesse caminho.
+- Autenticação não foi implementada; a decisão e o ponto de extensão estão descritos em `ARCHITECTURE.md`.
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.
